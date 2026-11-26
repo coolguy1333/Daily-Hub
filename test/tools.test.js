@@ -122,6 +122,26 @@ test('publish: emails accept only the six fields, are upserted by id, masked and
   assert.ok(!JSON.stringify(ctx.app.hub.view().email).includes('"m2"'));
 });
 
+test('publish: republishing an email keeps its stored label, Need to Read flag and subject', async () => {
+  const base = { id: 'keep1', received_at: ago(20), sender: 'Landlord' };
+  await call('publish', { emails: [{ ...base, subject: 'Lease renewal', label: 'Home', need_to_read: true }] });
+  const stored = () => ctx.app.store.hub.emails.find(e => e.id === 'keep1');
+
+  let r = await call('publish', { emails: [{ ...base, sender: 'Landlord (new name)' }] });
+  assert.deepEqual(r.updated, { emails: 1 });
+  assert.deepEqual([stored().label, stored().need_to_read, stored().subject, stored().sender], ['Home', true, 'Lease renewal', 'Landlord (new name)']);
+
+  r = await call('publish', { emails: [{ ...base, label: 'Bills', need_to_read: false, subject: 'Lease renewal (reply)' }] });
+  assert.deepEqual([stored().label, stored().need_to_read, stored().subject], ['Bills', false, 'Lease renewal (reply)'], 'sent fields still update');
+
+  // Defaults apply only to new emails.
+  await call('publish', { emails: [{ id: 'new1', received_at: ago(5), sender: 'Someone' }] });
+  const n = ctx.app.store.hub.emails.find(e => e.id === 'new1');
+  assert.deepEqual([n.label, n.need_to_read, n.subject], ['', false, '']);
+  await call('delete_entry', { section: 'emails', id: 'keep1' });
+  await call('delete_entry', { section: 'emails', id: 'new1' });
+});
+
 test('publish: more than 200 items per call are rejected individually', async () => {
   const news = Array.from({ length: 205 }, (_, i) => ({ topic: 'Bulk', headline: `n${i}`, url: `https://example.com/bulk/${i}` }));
   const r = await call('publish', { news });

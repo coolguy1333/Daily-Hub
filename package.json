@@ -1,6 +1,6 @@
 {
   "name": "daily-hub",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Private daily dashboard fed by Claude through its own remote MCP server.",
   "main": "server.js",
   "scripts": {
