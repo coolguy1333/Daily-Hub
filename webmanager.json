@@ -1,0 +1,44 @@
+{
+  "type": "app",
+  "health": "/api/health",
+  "memory_mb": 256,
+  "env": [
+    {
+      "name": "CF_ACCESS_TEAM_DOMAIN",
+      "description": "Your Cloudflare Zero Trust team domain, e.g. myteam.cloudflareaccess.com (Zero Trust > Settings > Custom pages / Team domain).",
+      "required": true
+    },
+    {
+      "name": "CF_ACCESS_AUD",
+      "description": "Application Audience (AUD) tag of the Cloudflare Access application that protects this site (Access > Applications > the app > Overview). Several can be given, separated by commas.",
+      "required": true
+    },
+    {
+      "name": "ALLOWED_EMAILS",
+      "description": "Comma-separated email addresses allowed to open the page and approve MCP connections.",
+      "required": true
+    },
+    {
+      "name": "HUB_SECRET",
+      "description": "At least 32 random characters used to sign OAuth tokens (e.g. the output of: openssl rand -hex 32). Changing it disconnects every MCP client.",
+      "secret": true,
+      "required": true
+    },
+    {
+      "name": "OAUTH_REDIRECT_ALLOWLIST",
+      "description": "Comma-separated OAuth redirect URIs MCP clients may register. Leave the default for Claude.",
+      "default": "https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback"
+    },
+    {
+      "name": "MCP_ALLOW_LOOPBACK",
+      "description": "Also allow http://localhost/callback and http://127.0.0.1/callback on any port, so Claude Code can connect.",
+      "default": "false",
+      "choices": ["true", "false"]
+    },
+    {
+      "name": "SITE_TITLE",
+      "description": "Title shown on the page.",
+      "default": "Daily hub"
+    }
+  ]
+}
