@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>{{TITLE}}</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">{{TITLE}}</h1>
+    <div class="who">
+      <span id="updated" class="muted"></span>
+      <span id="email" class="muted"></span>
+      <a href="/cdn-cgi/access/logout">Sign out</a>
+    </div>
+  </header>
+
+  <main>
+    <p id="error" class="notice down" hidden></p>
+    <section id="alerts" class="alerts" hidden aria-label="Open alerts"></section>
+
+    <section class="card">
+      <h2>Sites</h2>
+      <div id="sites" class="sites"></div>
+    </section>
+
+    <section class="card">
+      <h2>Today</h2>
+      <div id="today"></div>
+    </section>
+
+    <section class="card">
+      <h2>Network <span id="network-at" class="muted"></span></h2>
+      <div id="network"></div>
+    </section>
+
+    <section class="card">
+      <h2>Email <span class="muted">last 24 hours</span></h2>
+      <div id="email-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>News</h2>
+      <div id="news"></div>
+    </section>
+
+    <section class="card">
+      <h2>Connected clients</h2>
+      <div id="clients"></div>
+    </section>
+  </main>
+</body>
+</html>
