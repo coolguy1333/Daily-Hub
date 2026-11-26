@@ -48,7 +48,10 @@ Either of these blocks Claude's connector, so for the zone of `hub.example.com`:
 
 - turn off **Block AI Bots** and **Bot Fight Mode** (Security → Bots), **or**
 - add **IP Access rules** (Security → WAF → Tools) with action **Allow** for Anthropic's outbound
-  ranges `160.79.104.0/21` and `153.61.208.0/20`.
+  addresses. IP Access rules only accept `/24` or `/16` for IPv4, so add eight Allow rules:
+  `160.79.104.0/24` through `160.79.111.0/24` (`160.79.104.0/24`, `160.79.105.0/24`, …,
+  `160.79.111.0/24`). Optionally also add `153.61.208.0/24` through `153.61.223.0/24`
+  (sixteen more rules).
 
 The app's own checks of `webmgr.dev` and `upt.webmgr.dev` come from your server's IP; if they show
 down with HTTP 403 while the sites are up, bot protection on that zone is challenging them too.
@@ -136,8 +139,9 @@ is applied; `ok` is `false` when anything was rejected):
 - OAuth 2.1 per the MCP authorization spec: protected resource metadata (`/.well-known/oauth-protected-resource`
   and `…/mcp`), authorization server metadata, dynamic client registration, authorization code with
   PKCE (S256 only), refresh tokens. Redirect URIs must be on the allowlist.
-- Access tokens last 1 hour; refresh tokens 30 days and rotate on every use (reusing an old one
-  revokes that connection). Tokens are signed with `HUB_SECRET`; `/data/oauth.json` holds only their
+- Access tokens last 1 hour; refresh tokens 30 days and rotate on every use. A used refresh token
+  presented again by the same client within 120 seconds (a retry after a lost response) gets a new
+  token pair; after that, reusing it revokes that connection. Tokens are signed with `HUB_SECRET`; `/data/oauth.json` holds only their
   SHA-256 hashes.
 - Page: strict Content-Security-Policy (no inline script or style), `X-Frame-Options: DENY`, all stored
   text rendered with `textContent`. Changing requests must come from the page's own origin.

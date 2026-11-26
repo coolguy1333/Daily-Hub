@@ -170,7 +170,7 @@ test('token: unknown client gets 401 invalid_client; form encoding is required',
   assert.equal(r.status, 400);
 });
 
-test('refresh: rotates on use; a reused refresh token fails and revokes the family', async () => {
+test('refresh: rotates on use; a refresh token reused after 120 s fails and revokes the family', async () => {
   const c = await h.connect(ctx);
   const r1 = await h.token(ctx, { grant_type: 'refresh_token', refresh_token: c.refresh_token, client_id: c.clientId });
   assert.equal(r1.status, 200);
@@ -179,6 +179,7 @@ test('refresh: rotates on use; a reused refresh token fails and revokes the fami
   assert.equal((await h.rpc(ctx, c.access_token, 'tools/list')).status, 401, 'old access token stops working');
   assert.equal((await h.rpc(ctx, r1.body.access_token, 'tools/list')).status, 200);
 
+  ctx.clock.advance(121e3);
   const reuse = await h.token(ctx, { grant_type: 'refresh_token', refresh_token: c.refresh_token, client_id: c.clientId });
   assert.deepEqual([reuse.status, reuse.body.error], [400, 'invalid_grant']);
   assert.equal((await h.rpc(ctx, r1.body.access_token, 'tools/list')).status, 401, 'family revoked');
@@ -187,6 +188,47 @@ test('refresh: rotates on use; a reused refresh token fails and revokes the fami
 
   const bad = await h.token(ctx, { grant_type: 'refresh_token', refresh_token: 'dhr_forged.sig', client_id: c.clientId });
   assert.equal(bad.body.error, 'invalid_grant');
+});
+
+test('refresh: a retry with the used token within 120 s gets a new pair in the same family', async () => {
+  const c = await h.connect(ctx);
+  const refresh = (rt, clientId = c.clientId) => h.token(ctx, { grant_type: 'refresh_token', refresh_token: rt, client_id: clientId });
+  const first = await refresh(c.refresh_token);
+  assert.equal(first.status, 200);
+  const used = Object.values(ctx.app.store.oauth.refresh).find(r => r.used);
+  assert.equal(used.used_at, ctx.clock.now(), 'used_at is stored');
+
+  // The response was "lost": Claude retries with the same token 60 s later.
+  ctx.clock.advance(60e3);
+  const retry = await refresh(c.refresh_token);
+  assert.equal(retry.status, 200);
+  assert.notEqual(retry.body.refresh_token, first.body.refresh_token);
+  assert.notEqual(retry.body.access_token, first.body.access_token);
+  assert.equal((await h.rpc(ctx, retry.body.access_token, 'tools/list')).status, 200);
+  const fam = rt => ctx.app.store.oauth.refresh[require('crypto').createHash('sha256').update(rt).digest('hex')].family;
+  assert.equal(fam(retry.body.refresh_token), fam(first.body.refresh_token), 'same family');
+
+  // Another client can't use the grace window, and its attempt doesn't revoke anything.
+  const other = await h.register(ctx);
+  const stolen = await refresh(c.refresh_token, other.body.client_id);
+  assert.deepEqual([stolen.status, stolen.body.error], [400, 'invalid_grant']);
+  assert.equal((await h.rpc(ctx, retry.body.access_token, 'tools/list')).status, 200);
+
+  // The grace counts from the first use: at 121 s the family is revoked.
+  ctx.clock.advance(61e3);
+  const late = await refresh(c.refresh_token);
+  assert.deepEqual([late.status, late.body.error], [400, 'invalid_grant']);
+  assert.equal((await h.rpc(ctx, retry.body.access_token, 'tools/list')).status, 401);
+  assert.equal((await refresh(retry.body.refresh_token)).body.error, 'invalid_grant');
+  assert.equal((await refresh(first.body.refresh_token)).body.error, 'invalid_grant');
+});
+
+test('refresh: a used token stored without used_at (older data) is still treated as reuse', async () => {
+  const c = await h.connect(ctx);
+  assert.equal((await h.token(ctx, { grant_type: 'refresh_token', refresh_token: c.refresh_token, client_id: c.clientId })).status, 200);
+  for (const r of Object.values(ctx.app.store.oauth.refresh)) if (r.used) delete r.used_at;
+  const again = await h.token(ctx, { grant_type: 'refresh_token', refresh_token: c.refresh_token, client_id: c.clientId });
+  assert.equal(again.body.error, 'invalid_grant');
 });
 
 test('expiry: access tokens last 1 hour, refresh tokens 30 days', async () => {
