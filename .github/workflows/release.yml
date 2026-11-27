@@ -1,0 +1,45 @@
+# Publishes a GitHub release whenever main has a package.json version that isn't released yet.
+# To release: raise "version" in package.json (and package-lock.json) in a pull request and merge it.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Release the version in package.json if it is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if gh release view "$version" > /dev/null 2>&1; then
+            echo "Release $version already exists, nothing to do."
+            exit 0
+          fi
+          # Tags are plain versions (1.1.0, 1.2.0, ...), like the existing releases.
+          gh release create "$version" --target "$GITHUB_SHA" --title "$version" --generate-notes
+          echo "Released $version."
