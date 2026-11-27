@@ -3,17 +3,20 @@
 A small private dashboard. Claude fills it through the app's own **remote MCP server**; there is no
 other data source: the app makes no checks of its own.
 
-The page (one page, mobile-friendly, light/dark, refreshes every 60 s):
+The page has the same layout as [homelab-status](https://github.com/coolguy1333/homelab-status): a top
+bar, a sidebar of pages with badges (a scrolling tab bar under 900 px), light and dark themes, and it
+refreshes every 60 s. WebManager and Homelab Status show up only through what Claude publishes.
 
-0. **Alerts** – open alerts, most severe first.
-1. **Sites** – one card per site Claude reports on: its status and the newest things that happened
-   (outages, recoveries, updates, backups, certificates, …), worst status first.
-2. **Today** – the newest updates, newest first.
-3. **Network** – the latest snapshot grouped by group, down → warn → ok, with when it was taken.
-4. **Email** – last 24 hours: *Need to Read* on top, the rest grouped by label. Time, sender, subject
-   and label only, as plain text (never links).
-5. **News** – newest first, grouped by topic. A headline is a link only if its URL starts with `https://`.
-6. **Connected clients** – the MCP clients you approved, with **Revoke**.
+| Page | Shows | Badge |
+|---|---|---|
+| **Overview** (`#overview`) | *What's happening*: the newest update with its items and how long ago Claude sent it; *Needs attention* (open alerts, most severe first); tiles for open alerts, Need to Read, network items down or warn, news in the last 24 h. A banner warns when Claude hasn't checked in for over 2 hours. | open critical alerts (red) |
+| **Updates** | All updates (newest 100), filter daily / hourly / note, items as a table. | – |
+| **Network** | Tiles for ok / warn / down and when the snapshot was taken; one card per group, problems first. | items down (red) |
+| **Email** | Tiles for the last 24 h and Need to Read; Need to Read on top (until Claude clears it), then the last 24 h by label. Time, sender, subject and label only, as plain text, never links. | Need to Read (blue) |
+| **News** | Newest first, grouped by topic. A headline is a link only if its URL starts with `https://`. | – |
+| **Sites** | One card per site Claude reports on (the `sites` part of `publish`): status and newest notes, worst first. | sites down (red) |
+| **Alerts** | Open alerts, then those resolved in the last 30 days. | open alerts (red if any is critical, amber otherwise) |
+| **Clients** | Connected MCP clients with **Revoke**, the signed-in email and **Sign out**. | – |
 
 Node 22, one dependency (`@modelcontextprotocol/sdk`), plain HTML/CSS/JS, JSON files in `/data`.
 
@@ -82,7 +85,7 @@ Check: `https://hub.example.com/api/health` returns `{"status":"ok","version":"�
 3. In the connector's tool permissions, set **publish**, **raise_alert**, **resolve_alert** and
    **set_need_to_read** to **Always allow**, so scheduled runs never wait for an approval.
 
-To disconnect, use **Revoke** under *Connected clients* on the page (or remove the connector in Claude).
+To disconnect, use **Revoke** on the **Clients** page (or remove the connector in Claude).
 
 **Claude Code:** set `MCP_ALLOW_LOOPBACK=true`, then
 `claude mcp add --transport http daily-hub https://hub.example.com/mcp` and run `/mcp` to sign in.
@@ -156,6 +159,8 @@ is applied; `ok` is `false` when anything was rejected):
 
 All in `/data` (`DATA_DIR`): `hub.json` (everything published) and
 `oauth.json` (clients and token hashes). WebManager backs `/data` up before each restart.
+A `sites.json` left by versions before 1.1.0 (which checked sites themselves) is ignored; you can
+delete it.
 
 ## Development
 

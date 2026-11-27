@@ -1,8 +1,14 @@
 'use strict';
-// Renders /api/dashboard. Every stored value goes through textContent, never innerHTML.
+// Renders /api/dashboard as pages behind a sidebar with hash routing (#overview, #updates, ...),
+// following coolguy1333/homelab-status. Every stored value goes through textContent, never innerHTML.
 (() => {
-  const $ = id => document.getElementById(id);
   const REFRESH_MS = 60e3;
+  const VIEWS = ['overview', 'updates', 'network', 'email', 'news', 'sites', 'alerts', 'clients'];
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const state = { data: null, error: '', updatesKind: '' };
+
+  // ---------------------------------------------------------------- DOM helpers
 
   function el(tag, attrs, ...children) {
     const e = document.createElement(tag);
@@ -10,13 +16,12 @@
       if (v === null || v === undefined || v === false) continue;
       if (k === 'class') e.className = v;
       else if (k === 'text') e.textContent = v;
+      else if (k === 'on') for (const [ev, fn] of Object.entries(v)) e.addEventListener(ev, fn);
       else e.setAttribute(k, v);
     }
     for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) e.append(c instanceof Node ? c : String(c));
     return e;
   }
-  const fill = (node, ...children) => { node.replaceChildren(...children.flat().filter(Boolean)); };
-  const empty = text => el('p', { class: 'muted empty', text });
 
   const pad = n => String(n).padStart(2, '0');
   function time(iso) {
@@ -29,126 +34,188 @@
   function ago(iso) {
     if (!iso) return 'never';
     const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-    if (s < 60) return `${s}s ago`;
+    if (s < 60) return 'just now';
     if (s < 3600) return `${Math.round(s / 60)}m ago`;
     if (s < 86400) return `${Math.round(s / 3600)}h ago`;
     return `${Math.round(s / 86400)}d ago`;
   }
+  // A link only for a well-formed https:// URL (the server already sends null otherwise).
   const httpsUrl = u => {
-    try { const x = new URL(u); return x.protocol === 'https:' && /^https:\/\//i.test(u) ? x.href : null; } catch { return null; }
+    if (typeof u !== 'string' || !/^https:\/\//i.test(u)) return null;
+    try { const x = new URL(u); return x.protocol === 'https:' ? x.href : null; } catch { return null; }
   };
-  const pill = (state, text) => el('span', { class: `pill ${state}`, text: text || state });
 
-  // ---------------------------------------------------------------- sections
+  const DOT = { ok: 'up', warn: 'pending', down: 'down', info: 'info' };
+  const dot = (status, inline = false) => el('span', { class: `dot ${DOT[status] || ''}${inline ? ' inline' : ''}`, title: status, 'aria-label': status });
+  const PILL = { ok: 'ok', warn: 'warn', down: 'bad', critical: 'bad', info: 'info' };
+  const pill = (status, text) => el('span', { class: `pill ${PILL[status] || ''}`, text: text || status });
 
-  function renderAlerts(alerts) {
-    const box = $('alerts');
-    box.hidden = !alerts.length;
-    fill(box, alerts.map(a => el('div', { class: `alert ${a.severity}` },
-      el('span', { class: 'sev', text: a.severity }),
-      el('div', { class: 'alert-body' },
-        el('strong', { text: a.title }),
-        a.detail ? el('span', { class: 'detail', text: a.detail }) : null,
-      ),
-      el('span', { class: 'muted when', text: `since ${time(a.since)}` }),
-    )));
+  const pageHead = (title, sub) => el('div', { class: 'page-head' }, el('div', null, el('h2', { text: title }), sub ? el('p', { class: 'muted', text: sub }) : null));
+  const empty = text => el('div', { class: 'card empty', text });
+  const kpi = (k, v, s, cls, href) => el(href ? 'a' : 'div', { class: `kpi ${cls || ''}`, href },
+    el('div', { class: 'kpi-k', text: k }), el('div', { class: `kpi-v${typeof v === 'string' ? ' txt' : ''}`, text: String(v) }), s ? el('div', { class: 'kpi-s', text: s }) : null);
+
+  // Table with header labels and rows of cells (strings or nodes; {wrap: true, v} for wrapping text).
+  function table(heads, rows) {
+    return el('div', { class: 'table-wrap' }, el('table', { class: 'ctable' },
+      el('thead', null, el('tr', null, heads.map(h => el('th', { text: h })))),
+      el('tbody', null, rows.map(r => el('tr', null, r.map(c => {
+        if (c && typeof c === 'object' && !(c instanceof Node)) return el('td', { class: c.cls || (c.wrap ? 'wrap' : null) }, c.v instanceof Node ? c.v : String(c.v ?? ''));
+        return el('td', null, c instanceof Node ? c : String(c ?? ''));
+      })))),
+    ));
   }
+  const tableCard = (title, sub, heads, rows, cls = '') => el('div', { class: `card table-card ${cls}` },
+    title ? el('div', { class: 'card-head' }, el('h3', { text: title }), sub ? el('span', { class: 'muted small', text: sub }) : null) : null,
+    table(heads, rows));
 
-  // One card per site, from what Claude reports through the connector.
-  function renderSites(sites) {
-    if (!sites.length) return fill($('sites'), empty('Nothing reported yet.'));
-    fill($('sites'), sites.map(s => el('div', { class: 'site' },
-      el('div', { class: 'site-head' },
-        pill(s.status === 'info' ? 'nodata' : s.status, s.status === 'info' ? 'news' : s.status),
-        el('strong', { text: s.site }),
-        el('span', { class: 'muted small', text: `updated ${ago(s.updated_at)}` }),
-      ),
-      el('ul', { class: 'site-updates' }, s.items.map(u => el('li', null,
-        el('span', { class: `dot ${['ok', 'warn', 'down'].includes(u.status) ? u.status : 'info'}`, 'aria-label': u.status }),
-        el('div', null,
-          el('span', { class: 'su-title', text: u.title }),
-          u.detail ? el('span', { class: 'muted small', text: ` – ${u.detail}` }) : null,
-        ),
-        el('span', { class: 'muted small su-when', text: time(u.at) }),
-      ))),
-    )));
-  }
+  const itemsTable = items => table(['Name', 'State', 'Detail'], items.map(i => [
+    i.name, el('span', null, dot(i.state, true), i.state || ''), { wrap: true, v: i.detail || '' },
+  ]));
 
-  function renderToday(updates) {
-    if (!updates.length) return fill($('today'), empty('No updates yet.'));
-    fill($('today'), updates.map(u => el('article', { class: 'update' },
-      el('div', { class: 'update-head' },
-        pill(u.status), el('strong', { text: u.title }),
-        el('span', { class: 'muted small', text: `${u.kind} · ${time(u.at)}` }),
-      ),
-      u.summary ? el('p', { class: 'summary', text: u.summary }) : null,
-      u.items && u.items.length ? el('ul', { class: 'items' }, u.items.map(i => el('li', null,
-        i.state ? pill(['ok', 'warn', 'down'].includes(i.state) ? i.state : 'nodata', i.state) : null,
-        el('span', { text: i.name }),
-        i.detail ? el('span', { class: 'muted', text: ` – ${i.detail}` }) : null,
-      ))) : null,
-    )));
-  }
+  // ---------------------------------------------------------------- pages
 
-  function renderNetwork(net) {
-    $('network-at').textContent = net ? `taken ${time(net.taken_at)} (${ago(net.taken_at)})` : '';
-    if (!net) return fill($('network'), empty('No snapshot yet.'));
-    const summary = el('div', { class: 'net-counts' },
-      ['down', 'warn', 'ok'].map(s => net.counts[s] ? pill(s, `${net.counts[s]} ${s}`) : null));
-    fill($('network'), summary, el('div', { class: 'groups' }, net.groups.map(g => el('div', { class: 'group' },
-      el('h3', { text: g.group }),
-      el('ul', { class: 'board' }, g.items.map(i => el('li', { class: `state-${i.state}` },
-        el('span', { class: `dot ${i.state}`, 'aria-label': i.state }),
-        el('span', { class: 'name', text: i.name }),
-        i.detail ? el('span', { class: 'muted small detail', text: i.detail }) : null,
-      ))),
-    ))));
-  }
-
-  const mailRow = m => el('li', { class: 'mail' },
-    el('span', { class: 'muted time', text: time(m.received_at) }),
-    el('span', { class: 'sender', text: m.sender }),
-    el('span', { class: 'subject', text: m.subject || '(no subject)' }),
-    el('span', { class: 'label', text: m.label || 'Other' }),
-  );
-
-  function renderEmail(mail) {
-    if (!mail.total) return fill($('email-list'), empty('No email in the last 24 hours.'));
-    const out = [];
-    if (mail.need_to_read.length) {
-      out.push(el('div', { class: 'mail-group need' }, el('h3', { text: `Need to Read (${mail.need_to_read.length})` }), el('ul', { class: 'mails' }, mail.need_to_read.map(mailRow))));
+  function viewOverview(d) {
+    const o = d.overview;
+    const out = [pageHead("What's happening", 'Everything here comes from Claude through the MCP connector.')];
+    if (o.checkin.stale) {
+      out.push(el('div', { class: 'overall warn', role: 'status' }, el('span', { class: 'overall-dot' }),
+        el('div', { class: 'overall-title', text: o.checkin.since ? `No check-in from Claude since ${time(o.checkin.since)} (${ago(o.checkin.since)})` : 'No check-in from Claude yet' })));
     }
-    for (const g of mail.labels) out.push(el('div', { class: 'mail-group' }, el('h3', { text: `${g.label} (${g.items.length})` }), el('ul', { class: 'mails' }, g.items.map(mailRow))));
-    fill($('email-list'), out);
+    const u = o.latest;
+    out.push(u ? el('div', { class: 'card happening' },
+      el('div', { class: 'happening-head' }, dot(u.status), el('h3', { text: u.title }), pill(u.status)),
+      u.summary ? el('p', { class: 'pre-line', text: u.summary }) : null,
+      u.items && u.items.length ? itemsTable(u.items) : null,
+      el('div', { class: 'muted small', text: `from Claude, ${ago(u.at)} · ${u.kind}` }),
+    ) : empty('No updates from Claude yet.'));
+
+    if (o.attention.length) {
+      const cls = { critical: 'err', warn: 'warn', info: 'info' };
+      const ico = { critical: '●', warn: '▲', info: 'i' };
+      out.push(el('div', { class: 'card attention' },
+        el('div', { class: 'att-head' }, el('h3', { text: 'Needs attention' }), el('a', { href: '#alerts', class: 'small', text: 'All alerts' })),
+        el('ul', { class: 'att-list' }, o.attention.map(a => el('li', { class: `att ${cls[a.severity]}` },
+          el('span', { class: 'att-ico', text: ico[a.severity] }),
+          el('div', null, el('strong', { text: a.title }), a.detail ? el('span', { class: 'muted', text: ` – ${a.detail}` }) : null),
+          el('time', { text: `since ${time(a.since)}` }),
+        )))));
+    } else {
+      out.push(el('div', { class: 'card attention ok' }, el('span', { class: 'att-ok', text: '✓' }),
+        el('div', null, el('strong', { text: 'Nothing needs attention' }), el('p', { class: 'muted small', text: 'No open alerts.' }))));
+    }
+    const s = o.stats;
+    out.push(el('div', { class: 'kpis' },
+      kpi('Open alerts', s.open_alerts, null, s.open_alerts ? (d.badges.alerts.cls === 'bad' ? 'bad' : 'warn') : 'ok', '#alerts'),
+      kpi('Need to Read', s.need_to_read, null, '', '#email'),
+      kpi('Network down or warn', s.network_problems, d.network ? `snapshot ${ago(d.network.taken_at)}` : 'no snapshot', s.network_problems ? (d.network.counts.down ? 'bad' : 'warn') : 'ok', '#network'),
+      kpi('News, last 24 h', s.news_24h, null, '', '#news'),
+    ));
+    return out;
   }
 
-  function renderNews(news) {
-    if (!news.length) return fill($('news'), empty('No news yet.'));
-    fill($('news'), news.map(t => el('div', { class: 'topic' },
-      el('h3', { text: t.topic }),
-      el('ul', { class: 'news' }, t.items.map(n => {
-        const href = httpsUrl(n.url);
-        const headline = href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer', text: n.headline }) : el('span', { text: n.headline });
-        return el('li', null,
-          el('div', null, headline),
-          el('div', { class: 'muted small', text: [n.source, time(n.at)].filter(Boolean).join(' · ') }),
-          n.summary ? el('p', { class: 'summary', text: n.summary }) : null,
-        );
-      })),
-    )));
+  function viewUpdates(d) {
+    const kinds = [['', 'All'], ['daily', 'Daily'], ['hourly', 'Hourly'], ['note', 'Note']];
+    const list = d.updates.filter(u => !state.updatesKind || u.kind === state.updatesKind);
+    return [
+      pageHead('Updates', `${d.updates.length} newest updates from Claude, newest first.`),
+      el('div', { class: 'toolbar' }, el('div', { class: 'seg', role: 'group', 'aria-label': 'Filter by kind' }, kinds.map(([v, l]) =>
+        el('button', { type: 'button', class: state.updatesKind === v ? 'on' : '', 'aria-pressed': String(state.updatesKind === v), text: l, on: { click: () => { state.updatesKind = v; render(); } } })))),
+      list.length ? list.map(u => el('article', { class: 'card update' },
+        el('div', { class: 'update-head' }, dot(u.status), el('h3', { text: u.title }), pill('info', u.kind), el('span', { class: 'muted small', text: `${time(u.at)} · ${ago(u.at)}` })),
+        u.summary ? el('p', { class: 'pre-line', text: u.summary }) : null,
+        u.items && u.items.length ? itemsTable(u.items) : null,
+      )) : empty(state.updatesKind ? `No ${state.updatesKind} updates.` : 'No updates yet.'),
+    ];
   }
 
-  function renderClients(clients) {
-    if (!clients.length) return fill($('clients'), empty('No connected clients.'));
-    fill($('clients'), el('ul', { class: 'clients' }, clients.map(c => {
-      const btn = el('button', { class: 'btn small', type: 'button', text: 'Revoke' });
-      btn.addEventListener('click', () => revoke(c, btn));
-      return el('li', null,
-        el('div', null, el('strong', { text: c.name }), el('span', { class: 'muted', text: ` → ${c.redirect_host}` })),
-        el('div', { class: 'muted small', text: `connected ${time(c.approved_at)} · last used ${ago(c.last_used_at)}` }),
-        btn,
-      );
-    })));
+  function viewNetwork(d) {
+    const n = d.network;
+    if (!n) return [pageHead('Network'), empty('No network snapshot yet.')];
+    return [
+      pageHead('Network', 'The latest snapshot, groups with problems first.'),
+      el('div', { class: 'kpis' },
+        kpi('OK', n.counts.ok, null, 'ok'),
+        kpi('Warn', n.counts.warn, null, n.counts.warn ? 'warn' : ''),
+        kpi('Down', n.counts.down, null, n.counts.down ? 'bad' : ''),
+        kpi('Snapshot taken', time(n.taken_at), ago(n.taken_at)),
+      ),
+      el('div', { class: 'cards2' }, n.groups.map(g => tableCard(g.group, `${g.items.length} item${g.items.length === 1 ? '' : 's'}`, ['Name', 'State', 'Detail'],
+        g.items.map(i => [i.name, el('span', null, dot(i.state, true), i.state), { wrap: true, v: i.detail }])))),
+    ];
+  }
+
+  const mailRows = list => list.map(m => [time(m.received_at), { wrap: true, v: m.sender }, { wrap: true, v: m.subject || '(no subject)' }, m.label || 'Other']);
+  function viewEmail(d) {
+    const e = d.email;
+    const out = [
+      pageHead('Email', 'Need to Read stays until Claude clears it; the rest is the last 24 hours.'),
+      el('div', { class: 'kpis' }, kpi('Emails, last 24 h', e.count_24h), kpi('Need to Read', e.need_to_read.length, null, e.need_to_read.length ? 'warn' : '')),
+    ];
+    const heads = ['Time', 'Sender', 'Subject', 'Label'];
+    if (e.need_to_read.length) out.push(tableCard('Need to Read', null, heads, mailRows(e.need_to_read), 'ct-mail'));
+    for (const g of e.labels) out.push(tableCard(g.label, `${g.items.length}`, heads, mailRows(g.items), 'ct-mail ct-grouped'));
+    if (!e.need_to_read.length && !e.labels.length) out.push(empty('No email in the last 24 hours.'));
+    return out;
+  }
+
+  function viewNews(d) {
+    if (!d.news.length) return [pageHead('News'), empty('No news yet.')];
+    return [
+      pageHead('News', 'Newest first, grouped by topic.'),
+      d.news.map(t => el('div', { class: 'card pad' },
+        el('div', { class: 'card-head' }, el('h3', { text: t.topic }), el('span', { class: 'muted small', text: `${t.items.length}` })),
+        el('ul', { class: 'news-list' }, t.items.map(n => {
+          const href = httpsUrl(n.link);
+          return el('li', null,
+            href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer', text: n.headline }) : el('span', { class: 'headline', text: n.headline }),
+            el('div', { class: 'muted small', text: [n.source, `${time(n.at)}`].filter(Boolean).join(' · ') }),
+            n.summary ? el('p', { class: 'pre-line', text: n.summary }) : null,
+          );
+        })),
+      )),
+    ];
+  }
+
+  function viewSites(d) {
+    if (!d.site_notes.length) return [pageHead('Sites'), empty('Nothing reported about any site yet.')];
+    return [
+      pageHead('Sites', 'What Claude reports about each site, worst status first.'),
+      el('div', { class: 'cards2' }, d.site_notes.map(c => el('div', { class: 'card pad' },
+        el('div', { class: 'card-head' }, el('h3', null, dot(c.status, true), c.site), el('span', null, pill(c.status), ' ', el('span', { class: 'muted small', text: `updated ${ago(c.updated_at)}` }))),
+        el('ul', { class: 'notes' }, c.items.map(i => el('li', null, dot(i.status, true),
+          el('div', null, el('span', { text: i.title }), i.detail ? el('span', { class: 'muted small', text: ` – ${i.detail}` }) : null),
+          el('time', { text: time(i.at) })))),
+      ))),
+    ];
+  }
+
+  function viewAlerts(d) {
+    const a = d.alerts;
+    return [
+      pageHead('Alerts', 'Open alerts first, most severe first; then alerts resolved in the last 30 days.'),
+      a.open.length
+        ? tableCard('Open', `${a.open.length}`, ['Severity', 'Title', 'Detail', 'Since'], a.open.map(x => [pill(x.severity), { wrap: true, v: x.title }, { wrap: true, v: x.detail }, time(x.since)]))
+        : el('div', { class: 'card attention ok' }, el('span', { class: 'att-ok', text: '✓' }), el('strong', { text: 'No open alerts' })),
+      a.resolved.length
+        ? tableCard('Resolved, last 30 days', `${a.resolved.length}`, ['Severity', 'Title', 'Detail', 'Since', 'Resolved'], a.resolved.map(x => [pill(x.severity), { wrap: true, v: x.title }, { wrap: true, v: x.detail }, time(x.since), time(x.resolved_at)]))
+        : null,
+    ];
+  }
+
+  function viewClients(d) {
+    return [
+      pageHead('Clients', 'MCP clients you approved, and your Cloudflare Access session.'),
+      el('div', { class: 'card pad signed-in' },
+        el('div', null, el('div', { class: 'muted small', text: 'Signed in as' }), el('strong', { text: d.user })),
+        el('a', { class: 'btn', href: '/cdn-cgi/access/logout', text: 'Sign out' })),
+      d.clients.length
+        ? tableCard('Connected clients', `${d.clients.length}`, ['Name', 'Sends back to', 'Connected', 'Last used', ''], d.clients.map(c => [
+          { wrap: true, v: c.name }, c.redirect_host, time(c.approved_at), ago(c.last_used_at),
+          { cls: 'row-actions', v: el('button', { class: 'btn small danger', type: 'button', text: 'Revoke', on: { click: ev => revoke(c, ev.currentTarget) } }) },
+        ]))
+        : empty('No connected clients.'),
+    ];
   }
 
   async function revoke(c, btn) {
@@ -164,32 +231,88 @@
     }
   }
 
-  // ---------------------------------------------------------------- load
+  // ---------------------------------------------------------------- navigation & render
+
+  const currentView = () => {
+    const v = (location.hash || '').replace(/^#\/?/, '');
+    return VIEWS.includes(v) ? v : 'overview';
+  };
+
+  function badges(d) {
+    for (const [k, b] of Object.entries(d.badges)) {
+      const node = $(`[data-badge="${k}"]`);
+      if (node) { node.textContent = b.n ? String(b.n) : ''; node.className = `nb ${b.n ? b.cls : ''}`; }
+    }
+    const open = d.alerts.open.length;
+    const critical = d.badges.overview.n;
+    const hs = $('#headStatus');
+    hs.hidden = false;
+    hs.className = `head-status ${critical ? 'bad' : open ? 'warn' : 'ok'}`;
+    hs.textContent = critical ? `${critical} critical` : open ? `${open} alert${open > 1 ? 's' : ''}` : 'all good';
+    document.title = `${critical ? `(${critical}) ` : ''}${d.title}`;
+  }
+
+  const PAGES = { overview: viewOverview, updates: viewUpdates, network: viewNetwork, email: viewEmail, news: viewNews, sites: viewSites, alerts: viewAlerts, clients: viewClients };
+  function render() {
+    const view = currentView();
+    $$('.view').forEach(v => { v.hidden = v.dataset.view !== view; });
+    $$('#sidenav a').forEach(a => {
+      const on = a.dataset.view === view;
+      a.classList.toggle('active', on);
+      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    // Under 900 px the nav is a scrolling tab bar: keep the current page's tab in view.
+    const active = $('#sidenav a.active');
+    if (active && matchMedia('(max-width: 900px)').matches) active.scrollIntoView({ block: 'nearest', inline: 'center' });
+    const err = $('#error');
+    err.hidden = !state.error;
+    err.textContent = state.error;
+    const d = state.data;
+    const target = $(`#v-${view}`);
+    if (!d) { target.replaceChildren(empty(state.error ? 'Could not load the dashboard.' : 'Loading…')); return; }
+    badges(d);
+    $('#siteTitle').textContent = d.title;
+    $('#updated').textContent = `updated ${time(d.now)}`;
+    target.replaceChildren(...PAGES[view](d).flat().filter(Boolean));
+  }
 
   async function load() {
     try {
       const r = await fetch('/api/dashboard', { credentials: 'same-origin', cache: 'no-store' });
       if (r.status === 403 || r.redirected) throw new Error('Your session has expired. Reload the page to sign in again.');
       if (!r.ok) throw new Error(`Could not load the dashboard (HTTP ${r.status}).`);
-      const d = await r.json();
-      document.title = d.title;
-      $('title').textContent = d.title;
-      $('email').textContent = d.user;
-      $('updated').textContent = `updated ${time(d.now)}`;
-      $('error').hidden = true;
-      renderAlerts(d.alerts);
-      renderSites(d.sites);
-      renderToday(d.today);
-      renderNetwork(d.network);
-      renderEmail(d.email);
-      renderNews(d.news);
-      renderClients(d.clients);
+      state.data = await r.json();
+      state.error = '';
     } catch (err) {
-      $('error').textContent = err.message || 'Could not load the dashboard.';
-      $('error').hidden = false;
+      state.error = err.message || 'Could not load the dashboard.';
     }
+    render();
   }
 
+  window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+
+  // ---------------------------------------------------------------- theme (same as homelab-status)
+  function applyTheme(t) {
+    if (t) document.documentElement.dataset.theme = t;
+    else delete document.documentElement.dataset.theme;
+  }
+  try { applyTheme(localStorage.getItem('dh-theme')); } catch { /* storage unavailable */ }
+  $('#themeBtn').addEventListener('click', () => {
+    const dark = document.documentElement.dataset.theme
+      ? document.documentElement.dataset.theme === 'dark'
+      : matchMedia('(prefers-color-scheme: dark)').matches;
+    const next = dark ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem('dh-theme', next); } catch { /* ignore */ }
+  });
+
+  // The sidebar sticks right under the header, so it needs the header's real height.
+  const setTopbarHeight = () => document.documentElement.style.setProperty('--topbar-h', `${$('.topbar').offsetHeight}px`);
+  setTopbarHeight();
+  if (window.ResizeObserver) new ResizeObserver(setTopbarHeight).observe($('.topbar'));
+
+  render();
   load();
-  setInterval(load, REFRESH_MS);
+  setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 })();
