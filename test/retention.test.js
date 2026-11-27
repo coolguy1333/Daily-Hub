@@ -18,7 +18,7 @@ test('retention: 30 days for entries and resolved alerts, 7 days for snapshots',
       emails: [{ id: 'old', received_at: iso(t0 - 1000), sender: 'a', subject: 'b' }],
       network: { taken_at: iso(t0), items: [{ group: 'other', name: 'x', state: 'ok' }] },
       alerts: { raise: [{ key: 'resolved-old', severity: 'info', title: 't' }, { key: 'still-open', severity: 'warn', title: 't' }] },
-      sites: [{ site: 'homelab', title: 'old note' }],
+      sites: [{ site: 'Homelab Status', title: 'old note' }],
     });
     hub.resolveAlert({ key: 'resolved-old' });
 

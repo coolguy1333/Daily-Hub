@@ -34,11 +34,6 @@
     if (s < 86400) return `${Math.round(s / 3600)}h ago`;
     return `${Math.round(s / 86400)}d ago`;
   }
-  function duration(sec) {
-    if (sec === null || sec === undefined) return '';
-    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
-  }
   const httpsUrl = u => {
     try { const x = new URL(u); return x.protocol === 'https:' && /^https:\/\//i.test(u) ? x.href : null; } catch { return null; }
   };
@@ -59,44 +54,23 @@
     )));
   }
 
+  // One card per site, from what Claude reports through the connector.
   function renderSites(sites) {
-    fill($('sites'), sites.map(s => {
-      const bars = el('div', { class: 'bars', 'aria-label': 'Last 24 hours' }, s.bars.map(b => {
-        const cls = b.pct === null ? 'nodata' : b.pct >= 100 ? 'up' : b.pct <= 0 ? 'down' : 'warn';
-        return el('span', { class: `bar ${cls}`, title: `${time(b.t)}: ${b.pct === null ? 'no data' : `${b.pct}% up`}` });
-      }));
-      const meta = [
-        s.ms !== null ? `${s.ms} ms` : null,
-        `checked ${ago(s.checked_at)}`,
-        s.uptime_7d !== null ? `${s.uptime_7d}% 7d` : null,
-        s.info && s.info.version ? `v${s.info.version}` : null,
-        s.info && s.info.uptime !== null ? `up ${duration(s.info.uptime)}` : null,
-        s.error ? s.error : null,
-      ].filter(Boolean).join(' · ');
-      return el('div', { class: 'site' },
-        el('div', { class: 'site-head' },
-          pill(s.state === 'up' ? 'ok' : s.state === 'down' ? 'down' : 'nodata', s.state),
-          el('strong', { text: s.name }),
-          el('span', { class: 'muted', text: s.host }),
-        ),
-        el('div', { class: 'muted small', text: meta }),
-        bars,
-        el('div', { class: 'bar-legend muted small' }, el('span', { text: '24h ago' }), el('span', { text: 'now' })),
-        siteUpdates(s.updates || []),
-      );
-    }));
-  }
-
-  // Important things about a site: down / back up / new version / restart, and Claude's notes.
-  function siteUpdates(list) {
-    if (!list.length) return el('p', { class: 'muted small site-quiet', text: 'Nothing new in the last 7 days.' });
-    return el('ul', { class: 'site-updates' }, list.map(u => el('li', null,
-      el('span', { class: `dot ${['ok', 'warn', 'down'].includes(u.status) ? u.status : 'info'}`, 'aria-label': u.status }),
-      el('div', { class: 'su-body' },
-        el('span', { class: 'su-title', text: u.title }),
-        u.detail ? el('span', { class: 'muted small', text: ` – ${u.detail}` }) : null,
+    if (!sites.length) return fill($('sites'), empty('Nothing reported yet.'));
+    fill($('sites'), sites.map(s => el('div', { class: 'site' },
+      el('div', { class: 'site-head' },
+        pill(s.status === 'info' ? 'nodata' : s.status, s.status === 'info' ? 'news' : s.status),
+        el('strong', { text: s.site }),
+        el('span', { class: 'muted small', text: `updated ${ago(s.updated_at)}` }),
       ),
-      el('span', { class: 'muted small su-when', text: `${time(u.at)}${u.source === 'claude' ? ' · Claude' : ''}` }),
+      el('ul', { class: 'site-updates' }, s.items.map(u => el('li', null,
+        el('span', { class: `dot ${['ok', 'warn', 'down'].includes(u.status) ? u.status : 'info'}`, 'aria-label': u.status }),
+        el('div', null,
+          el('span', { class: 'su-title', text: u.title }),
+          u.detail ? el('span', { class: 'muted small', text: ` – ${u.detail}` }) : null,
+        ),
+        el('span', { class: 'muted small su-when', text: time(u.at) }),
+      ))),
     )));
   }
 

@@ -30,7 +30,7 @@ test('tools/list: names, short descriptions, annotations, strict schemas', async
 test('get_state on an empty hub', async () => {
   const s = await call('get_state');
   assert.deepEqual(s.latest, { update: null, network_at: null, news_at: null, email_received_at: null, site_note_at: null });
-  assert.deepEqual(s.sites, [{ id: 'webmanager', state: 'pending', since: null }, { id: 'homelab', state: 'pending', since: null }]);
+  assert.deepEqual(s.sites, []);
   assert.deepEqual(s.open_alerts, []);
   assert.deepEqual(s.need_to_read, []);
   assert.equal(s.counts.updates, 0);
@@ -155,17 +155,18 @@ test('publish: more than 200 items per call are rejected individually', async ()
 
 test('publish: site notes are validated, replaced by key, listed and deleted', async () => {
   let r = await call('publish', { sites: [
-    { site: 'homelab', key: 'cert', status: 'warn', title: 'Certificate expires in 10 days' },
-    { site: 'webmanager', title: 'Nightly backup finished', detail: '2.1 GB' },
-    { site: 'nope', title: 'x' },
-    { site: 'homelab', title: 'x', url: 'https://example.com' },
+    { site: 'Homelab Status', key: 'cert', status: 'warn', title: 'Certificate expires in 10 days' },
+    { site: 'WebManager', status: 'ok', title: 'Nightly backup finished', detail: '2.1 GB' },
+    { site: 'x'.repeat(101), title: 'name too long' },
+    { site: 'WebManager', title: 'x', url: 'https://example.com' },
+    { site: 'WebManager', status: 'great', title: 'bad status' },
   ] });
   assert.deepEqual(r.added, { site_notes: 2 });
-  assert.deepEqual(r.rejected.map(x => x.index), [2, 3]);
+  assert.deepEqual(r.rejected.map(x => x.index), [2, 3, 4]);
 
   ctx.clock.advance(60e3);
-  r = await call('publish', { sites: [{ site: 'homelab', key: 'cert', status: 'warn', title: 'Certificate expires in 9 days' }] });
-  assert.deepEqual(r.updated, { site_notes: 1 });
+  r = await call('publish', { sites: [{ site: 'homelab status', key: 'cert', status: 'warn', title: 'Certificate expires in 9 days' }] });
+  assert.deepEqual(r.updated, { site_notes: 1 }, 'site names match case-insensitively');
   const notes = ctx.app.store.hub.site_notes.filter(n => n.key === 'cert');
   assert.equal(notes.length, 1);
   assert.equal(notes[0].title, 'Certificate expires in 9 days');
@@ -174,22 +175,35 @@ test('publish: site notes are validated, replaced by key, listed and deleted', a
   const s = await call('get_state');
   assert.equal(s.counts.site_notes, 2);
   assert.equal(s.latest.site_note_at, ago(0));
+  assert.deepEqual(s.sites, [
+    { site: 'homelab status', status: 'warn', updated_at: ago(0) },
+    { site: 'WebManager', status: 'ok', updated_at: ago(1) },
+  ]);
 
   const list = await call('list_entries', { section: 'sites' });
-  assert.deepEqual(list.items.map(n => n.site), ['homelab', 'webmanager']);
-  const del = await call('delete_entry', { section: 'sites', id: list.items[1].id });
-  assert.equal(del.deleted, 1);
+  assert.deepEqual(list.items.map(n => n.site), ['homelab status', 'WebManager']);
 });
 
-test('dashboard: each site shows its checker events and Claude notes, newest first', async () => {
-  const h0 = ctx.app.store.sites.homelab;
-  h0.events.push({ t: ctx.clock.now() - 120e3, kind: 'down', status: 'down', title: 'Down: HTTP 502', detail: '' });
+test('site cards: status from the newest note that sets one, worst first, newest notes first', async () => {
+  ctx.clock.advance(60e3);
+  await call('publish', { sites: [{ site: 'WebManager', status: 'down', title: 'Down: HTTP 502' }] });
+  ctx.clock.advance(60e3);
+  await call('publish', { sites: [{ site: 'WebManager', title: 'Investigating the proxy' }] }); // info: no status change
+  let cards = ctx.app.hub.siteCards();
+  assert.deepEqual(cards.map(c => [c.site, c.status]), [['WebManager', 'down'], ['homelab status', 'warn']]);
+  assert.deepEqual(cards[0].items.map(i => i.title), ['Investigating the proxy', 'Down: HTTP 502', 'Nightly backup finished']);
+
+  ctx.clock.advance(5 * 60e3);
+  await call('publish', { sites: [{ site: 'WebManager', status: 'ok', title: 'Back up after 6m' }] });
+  cards = ctx.app.hub.siteCards();
+  assert.deepEqual(cards.map(c => [c.site, c.status]), [['homelab status', 'warn'], ['WebManager', 'ok']]);
+
+  // The page gets exactly these cards, and nothing from site checks.
   const d = await (await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) })).json();
-  const homelab = d.sites.find(x => x.id === 'homelab');
-  assert.deepEqual(homelab.updates.map(u => [u.source, u.title]), [['claude', 'Certificate expires in 9 days'], ['check', 'Down: HTTP 502']]);
-  assert.equal(homelab.updates[0].status, 'warn');
-  assert.equal(homelab.events, undefined);
-  h0.events.length = 0;
+  assert.deepEqual(d.sites.map(c => c.site), ['homelab status', 'WebManager']);
+  assert.ok(!('bars' in d.sites[0]) && !('uptime_7d' in d.sites[0]));
+  for (const n of [...ctx.app.store.hub.site_notes]) await call('delete_entry', { section: 'sites', id: n.id });
+  assert.deepEqual(ctx.app.hub.siteCards(), []);
 });
 
 test('raise_alert / resolve_alert are idempotent by key', async () => {
@@ -243,7 +257,8 @@ test('list_entries: newest first, limit <= 50, since filter', async () => {
   assert.deepEqual(Object.keys(r.items[0]).sort(), ['at', 'headline', 'id', 'topic']);
   r = await call('list_entries', { section: 'news', limit: 51 });
   assert.equal(r._isError, true);
-  r = await call('list_entries', { section: 'emails', since: ago(15) });
+  const m2At = ctx.app.store.hub.emails.find(e => e.id === 'm2').received_at;
+  r = await call('list_entries', { section: 'emails', since: m2At });
   assert.deepEqual(r.items.map(e => e.id), ['m2']);
   r = await call('list_entries', { section: 'network' });
   assert.ok(r.items[0].items >= 1);

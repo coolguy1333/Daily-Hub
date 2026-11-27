@@ -40,13 +40,14 @@ async function startApp(opts = {}) {
   let t = opts.start || Date.parse('2026-11-26T12:00:00Z');
   const clock = { now: () => t, advance: ms => { t += ms; }, set: v => { t = v; } };
   const keys = { list: [rsaKey('k1')], fetches: 0 };
-  const sitesFetch = opts.sitesFetch || (async () => new Response('{"status":"ok"}', { status: 200 }));
+  const unexpected = [];
   const fakeFetch = async (url, init) => {
     if (url === `https://${TEAM}/cdn-cgi/access/certs`) {
       keys.fetches++;
       return new Response(JSON.stringify({ keys: keys.list.map(k => k.jwk) }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
-    return sitesFetch(url, init);
+    unexpected.push(String(url));
+    throw new Error(`unexpected fetch ${url}`);
   };
   const logs = [];
   const port = await freePort();
@@ -54,7 +55,7 @@ async function startApp(opts = {}) {
   const app = createApp({
     version: '1.0.0-test', dataDir: dir, publicUrl: base, title: 'Daily hub',
     teamDomain: TEAM, aud: AUD, allowedEmails: `${EMAIL}, Other@Example.com`, secret: SECRET,
-    redirectAllowlist: opts.redirectAllowlist, allowLoopback: opts.allowLoopback || false, siteChecks: false,
+    redirectAllowlist: opts.redirectAllowlist, allowLoopback: opts.allowLoopback || false,
     mcpRateLimit: opts.mcpRateLimit,
   }, { now: clock.now, fetch: fakeFetch, log: m => logs.push(m) });
   await new Promise(r => app.server.listen(port, '127.0.0.1', r));
@@ -65,7 +66,7 @@ async function startApp(opts = {}) {
   }, key, header);
 
   const ctx = {
-    app, base, dir, clock, keys, logs, jwt, rsaKey,
+    app, base, dir, clock, keys, logs, jwt, rsaKey, unexpected,
     async close() { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); },
   };
   return ctx;
