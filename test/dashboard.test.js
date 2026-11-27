@@ -5,9 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const h = require('./helpers');
-const { staleCheck, badgeCounts, httpsLink, STALE_AFTER } = require('../lib/view');
+const { staleCheck, badgeCounts, homelabCard, httpsLink, STALE_AFTER } = require('../lib/view');
 
 const HOUR = 3600e3;
+const PAGES = ['overview', 'updates', 'email', 'news', 'alerts', 'clients'];
 
 test('staleCheck: the banner turns on after 2 hours without an update', () => {
   const now = Date.parse('2026-11-27T12:00:00Z');
@@ -20,23 +21,26 @@ test('staleCheck: the banner turns on after 2 hours without an update', () => {
   assert.equal(staleCheck('garbage', now).stale, true);
 });
 
-test('badgeCounts: critical alerts, open alerts, network down, Need to Read, sites down', () => {
+test('badgeCounts: critical alerts, open alerts, Need to Read; no network or sites badges', () => {
   const alert = severity => ({ severity });
-  const net = (down, warn) => ({ counts: { ok: 3, warn, down } });
-  let b = badgeCounts({ openAlerts: [alert('critical'), alert('warn'), alert('critical'), alert('info')], network: net(2, 5), needToRead: 4, siteCards: [{ status: 'down' }, { status: 'warn' }] });
+  let b = badgeCounts({ openAlerts: [alert('critical'), alert('warn'), alert('critical'), alert('info')], needToRead: 4 });
   assert.deepEqual(b, {
     overview: { n: 2, cls: 'bad' },
     alerts: { n: 4, cls: 'bad' },
-    network: { n: 2, cls: 'bad' },
     email: { n: 4, cls: 'new' },
-    sites: { n: 1, cls: 'bad' },
   });
-  b = badgeCounts({ openAlerts: [alert('warn'), alert('info')], network: net(0, 3), needToRead: 0 });
+  b = badgeCounts({ openAlerts: [alert('warn'), alert('info')], needToRead: 0 });
   assert.deepEqual(b.alerts, { n: 2, cls: 'warn' }, 'amber when nothing is critical');
   assert.equal(b.overview.n, 0);
-  assert.equal(b.network.n, 0, 'warn items do not count, only down');
   assert.equal(b.email.n, 0);
-  assert.equal(badgeCounts({}).network.n, 0, 'no snapshot');
+});
+
+test('homelabCard: "All OK" with no open alert, otherwise open alerts newest first', () => {
+  assert.deepEqual(homelabCard([]), { ok: true, alerts: [] });
+  const a = (title, since, severity = 'warn') => ({ severity, title, detail: '', since, resolved_at: null });
+  const card = homelabCard([a('old critical', '2026-11-27T08:00:00.000Z', 'critical'), a('newest', '2026-11-27T11:00:00.000Z'), a('middle', '2026-11-27T10:00:00.000Z', 'info')]);
+  assert.equal(card.ok, false);
+  assert.deepEqual(card.alerts.map(x => x.title), ['newest', 'middle', 'old critical'], 'newest first, not by severity');
 });
 
 test('httpsLink: only well-formed https:// URLs become links', () => {
@@ -46,16 +50,21 @@ test('httpsLink: only well-formed https:// URLs become links', () => {
   }
 });
 
-test('/api/dashboard: every page in one call, no sites field', async () => {
+test('/api/dashboard: Homelab card, daily updates only, no network or sites', async () => {
   const ctx = await h.startApp();
   try {
     const iso = ms => new Date(ctx.clock.now() - ms).toISOString();
     const hub = ctx.app.hub;
+    const dash = async () => (await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) })).json();
+
+    // Nothing open: All OK.
+    let d = await dash();
+    assert.deepEqual(d.overview.homelab, { ok: true, alerts: [] });
+    assert.equal(d.overview.latest, null);
+    assert.equal(d.overview.checkin.stale, true);
+
     hub.publish({
-      update: { kind: 'hourly', status: 'warn', title: 'Hourly check', summary: 'One host warm.', items: [{ name: 'pve1', state: 'warn', detail: '81 °C' }] },
-      network: { taken_at: iso(60e3), items: [
-        { group: 'proxmox', name: 'pve1', state: 'ok' }, { group: 'unifi', name: 'ap-1', state: 'down' }, { group: 'services', name: 'dns', state: 'warn' },
-      ] },
+      update: { kind: 'daily', status: 'warn', title: 'Daily summary', summary: 'One host warm.', items: [{ name: 'pve1', state: 'warn', detail: '81 °C' }] },
       news: [
         { topic: 'Tech', headline: 'Safe', url: 'https://example.com/safe' },
         { topic: 'Tech', headline: 'Plain http', url: 'http://example.com/plain' },
@@ -64,61 +73,53 @@ test('/api/dashboard: every page in one call, no sites field', async () => {
       emails: [
         { id: 'a', received_at: iso(10 * 60e3), sender: 'Bank', subject: 'Statement', label: 'Finance', need_to_read: true },
         { id: 'b', received_at: iso(20 * 60e3), sender: 'Shop', subject: 'Shipped', label: 'Orders' },
-        { id: 'c', received_at: iso(3 * 24 * HOUR), sender: 'Old', subject: 'Old', label: 'Orders', need_to_read: true },
-        { id: 'd', received_at: iso(3 * 24 * HOUR), sender: 'Old', subject: 'Old 2', label: 'Orders' },
       ],
-      alerts: { raise: [{ key: 'k1', severity: 'warn', title: 'Disk 85%' }, { key: 'k2', severity: 'critical', title: 'Backup failed' }, { key: 'k3', severity: 'info', title: 'FYI' }] },
-      sites: [{ site: 'WebManager', status: 'down', title: 'Down: HTTP 502' }],
+      alerts: { raise: [{ key: 'k1', severity: 'critical', title: 'Backup failed' }, { key: 'k3', severity: 'info', title: 'FYI' }] },
     });
     hub.resolveAlert({ key: 'k3' });
-    for (let i = 0; i < 105; i++) hub.publish({ update: { kind: i % 2 ? 'note' : 'daily', status: 'ok', title: `u${i}` } });
+    ctx.clock.advance(60e3);
+    hub.publish({ alerts: { raise: [{ key: 'k2', severity: 'warn', title: 'Disk 85%', detail: 'pve2' }] } });
+    ctx.clock.advance(60e3);
+    // Hourly and note updates are accepted but not shown; they still count as a check-in.
+    hub.publish({ update: { kind: 'hourly', status: 'ok', title: 'Hourly check' } });
+    hub.publish({ update: { kind: 'note', status: 'ok', title: 'A note' } });
 
-    const r = await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) });
-    assert.equal(r.status, 200);
-    const d = await r.json();
-    assert.deepEqual(Object.keys(d).sort(), ['alerts', 'badges', 'clients', 'email', 'network', 'news', 'now', 'overview', 'site_notes', 'title', 'updates', 'user']);
-    assert.equal('sites' in d, false);
-    assert.equal(d.user, h.EMAIL);
-    assert.equal(d.title, 'Daily hub');
+    d = await dash();
+    assert.deepEqual(Object.keys(d).sort(), ['alerts', 'badges', 'clients', 'email', 'news', 'now', 'overview', 'title', 'updates', 'user']);
+    for (const gone of ['sites', 'site_notes', 'network']) assert.equal(gone in d, false, gone);
 
-    // Overview
-    assert.equal(d.overview.latest.title, 'u104');
-    assert.deepEqual(d.overview.checkin.stale, false);
-    assert.deepEqual(d.overview.attention.map(a => a.severity), ['critical', 'warn'], 'most severe first, resolved excluded');
-    assert.deepEqual(d.overview.stats, { open_alerts: 2, need_to_read: 2, network_problems: 2, news_24h: 3 });
-    // Updates: at most 100, newest first, with items
-    assert.equal(d.updates.length, 100);
-    assert.equal(d.updates[0].title, 'u104');
-    assert.ok(d.updates.every(u => 'items' in u && !('id' in u)));
-    // Network: problems first
-    assert.deepEqual(d.network.counts, { ok: 1, warn: 1, down: 1 });
-    assert.deepEqual(d.network.groups.map(g => g.group), ['unifi', 'services', 'proxmox']);
-    // Email: Need to Read (until cleared) on top, the rest of the last 24 hours by label, no ids
-    assert.equal(d.email.count_24h, 2);
-    assert.deepEqual(d.email.need_to_read.map(m => m.subject), ['Statement', 'Old']);
-    assert.deepEqual(d.email.labels, [{ label: 'Orders', items: [{ received_at: iso(20 * 60e3), sender: 'Shop', subject: 'Shipped', label: 'Orders' }] }]);
-    assert.ok(!JSON.stringify(d.email).includes('"id"'));
+    // Overview: Homelab card with open alerts newest first, the newest daily update, three tiles.
+    assert.equal(d.overview.homelab.ok, false);
+    assert.deepEqual(d.overview.homelab.alerts.map(a => [a.title, a.severity]), [['Disk 85%', 'warn'], ['Backup failed', 'critical']]);
+    assert.equal(d.overview.homelab.alerts[0].detail, 'pve2');
+    assert.equal(d.overview.latest.title, 'Daily summary');
+    assert.equal(d.overview.checkin.stale, false);
+    assert.equal(d.overview.checkin.since, d.now, 'the hourly update counts as a check-in');
+    assert.deepEqual(d.overview.stats, { open_alerts: 2, need_to_read: 1, news_24h: 3 });
+
+    // Updates: only daily.
+    assert.deepEqual(d.updates.map(u => [u.kind, u.title]), [['daily', 'Daily summary']]);
+    assert.equal(hub.data.updates.length, 3, 'other kinds are still stored');
+
     // News: a link only for https://
     const links = Object.fromEntries(d.news[0].items.map(n => [n.headline, n.link]));
     assert.deepEqual(links, { Safe: 'https://example.com/safe', 'Plain http': null, Script: null });
-    assert.ok(!JSON.stringify(d.news).includes('javascript:'), 'unsafe URLs are not sent to the page at all');
-    // Alerts: open and resolved
-    assert.deepEqual(d.alerts.open.map(a => a.title), ['Backup failed', 'Disk 85%']);
+
+    // Alerts page and badges.
+    assert.deepEqual(d.alerts.open.map(a => a.title), ['Backup failed', 'Disk 85%'], 'Alerts page: most severe first');
     assert.deepEqual(d.alerts.resolved.map(a => a.title), ['FYI']);
-    // Sites (Claude's notes) and badges
-    assert.deepEqual(d.site_notes.map(c => [c.site, c.status]), [['WebManager', 'down']]);
-    assert.deepEqual(d.badges, { overview: { n: 1, cls: 'bad' }, alerts: { n: 2, cls: 'bad' }, network: { n: 1, cls: 'bad' }, email: { n: 2, cls: 'new' }, sites: { n: 1, cls: 'bad' } });
+    assert.deepEqual(d.badges, { overview: { n: 1, cls: 'bad' }, alerts: { n: 2, cls: 'bad' }, email: { n: 1, cls: 'new' } });
 
-    // The stale banner turns on 2 hours after the newest update.
+    // Everything resolved: All OK again.
+    hub.resolveAlert({ key: 'k1' });
+    hub.resolveAlert({ key: 'k2' });
+    d = await dash();
+    assert.deepEqual(d.overview.homelab, { ok: true, alerts: [] });
+
+    // The stale banner turns on 2 hours after the newest update of any kind.
     ctx.clock.advance(2 * HOUR + 60e3);
-    const later = await (await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) })).json();
-    assert.equal(later.overview.checkin.stale, true);
-    assert.equal(later.overview.checkin.since, d.overview.latest.at);
-
-    // Resolved alerts older than 30 days drop off the Alerts page.
-    ctx.clock.advance(31 * 24 * HOUR);
-    const month = await (await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) })).json();
-    assert.deepEqual(month.alerts.resolved, []);
+    d = await dash();
+    assert.equal(d.overview.checkin.stale, true);
   } finally { await ctx.close(); }
 });
 
@@ -130,20 +131,25 @@ test('/api/dashboard keeps the Access check', async () => {
   } finally { await ctx.close(); }
 });
 
-test('page script: links only for https://, text only through textContent, all eight pages routed', () => {
+test('page: six pages, no Network or Sites, Homelab card, links only for https://, textContent only', () => {
   const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
   assert.doesNotMatch(js, /\.innerHTML\s*=|insertAdjacentHTML|outerHTML\s*=|document\.write/);
-  // The client-side check, run on its own.
   const src = js.match(/const httpsUrl = u => \{[\s\S]*?\n  \};/)[0];
   const httpsUrl = new Function(`${src}; return httpsUrl;`)();
   assert.equal(httpsUrl('https://example.com/x'), 'https://example.com/x');
   for (const u of ['http://example.com', 'javascript:alert(1)', null, 'https://']) assert.equal(httpsUrl(u), null, String(u));
   assert.match(js, /href \? el\('a', \{ href, target: '_blank', rel: 'noopener noreferrer'/);
-  for (const v of ['overview', 'updates', 'network', 'email', 'news', 'sites', 'alerts', 'clients']) {
+  for (const v of PAGES) {
     assert.ok(html.includes(`href="#${v}" data-view="${v}"`), `nav ${v}`);
     assert.ok(html.includes(`<section class="view" data-view="${v}" hidden><div id="v-${v}"></div></section>`), `view ${v}`);
-    assert.ok(html.includes(`data-badge="${v}"`), `badge ${v}`);
   }
+  for (const gone of ['network', 'sites']) {
+    assert.ok(!html.includes(`#${gone}`) && !html.includes(`data-view="${gone}"`), `no ${gone} page`);
+    assert.doesNotMatch(js, new RegExp(`view${gone[0].toUpperCase()}${gone.slice(1)}\\b`), `no ${gone} view`);
+  }
+  assert.ok(!js.includes('Network down or warn'), 'no network KPI');
+  assert.match(js, /el\('h3', \{ text: 'Homelab' \}\), el\('strong', \{ text: 'All OK' \}\)/);
+  assert.match(js, /const VIEWS = \['overview', 'updates', 'email', 'news', 'alerts', 'clients'\];/);
   assert.doesNotMatch(html, /<script>|<style|\sstyle=|\son\w+=/i, 'no inline scripts, styles or handlers');
 });

@@ -3,10 +3,10 @@
 // following coolguy1333/homelab-status. Every stored value goes through textContent, never innerHTML.
 (() => {
   const REFRESH_MS = 60e3;
-  const VIEWS = ['overview', 'updates', 'network', 'email', 'news', 'sites', 'alerts', 'clients'];
+  const VIEWS = ['overview', 'updates', 'email', 'news', 'alerts', 'clients'];
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
-  const state = { data: null, error: '', updatesKind: '' };
+  const state = { data: null, error: '' };
 
   // ---------------------------------------------------------------- DOM helpers
 
@@ -77,71 +77,52 @@
 
   function viewOverview(d) {
     const o = d.overview;
-    const out = [pageHead("What's happening", 'Everything here comes from Claude through the MCP connector.')];
+    const out = [pageHead('Overview', 'Everything here comes from Claude through the MCP connector.')];
+    // Homelab: "All OK" when no alert is open, otherwise the open alerts, newest first.
+    const hl = o.homelab;
+    if (hl.ok) {
+      out.push(el('div', { class: 'card attention ok homelab' }, el('span', { class: 'att-ok', text: '✓' }),
+        el('div', null, el('h3', { text: 'Homelab' }), el('strong', { text: 'All OK' }))));
+    } else {
+      const cls = { critical: 'err', warn: 'warn', info: 'info' };
+      const ico = { critical: '●', warn: '▲', info: 'i' };
+      out.push(el('div', { class: 'card attention homelab' },
+        el('div', { class: 'att-head' }, el('h3', { text: 'Homelab' }), el('a', { href: '#alerts', class: 'small', text: `${hl.alerts.length} open alert${hl.alerts.length === 1 ? '' : 's'}` })),
+        el('ul', { class: 'att-list' }, hl.alerts.map(a => el('li', { class: `att ${cls[a.severity]}` },
+          el('span', { class: 'att-ico', text: ico[a.severity], title: a.severity }),
+          el('div', null, el('strong', { text: a.title }), a.detail ? el('span', { class: 'muted', text: ` – ${a.detail}` }) : null),
+          el('time', { text: `since ${time(a.since)}` }),
+        )))));
+    }
     if (o.checkin.stale) {
       out.push(el('div', { class: 'overall warn', role: 'status' }, el('span', { class: 'overall-dot' }),
         el('div', { class: 'overall-title', text: o.checkin.since ? `No check-in from Claude since ${time(o.checkin.since)} (${ago(o.checkin.since)})` : 'No check-in from Claude yet' })));
     }
     const u = o.latest;
     out.push(u ? el('div', { class: 'card happening' },
+      el('div', { class: 'muted small', text: "What's happening" }),
       el('div', { class: 'happening-head' }, dot(u.status), el('h3', { text: u.title }), pill(u.status)),
       u.summary ? el('p', { class: 'pre-line', text: u.summary }) : null,
       u.items && u.items.length ? itemsTable(u.items) : null,
-      el('div', { class: 'muted small', text: `from Claude, ${ago(u.at)} · ${u.kind}` }),
-    ) : empty('No updates from Claude yet.'));
-
-    if (o.attention.length) {
-      const cls = { critical: 'err', warn: 'warn', info: 'info' };
-      const ico = { critical: '●', warn: '▲', info: 'i' };
-      out.push(el('div', { class: 'card attention' },
-        el('div', { class: 'att-head' }, el('h3', { text: 'Needs attention' }), el('a', { href: '#alerts', class: 'small', text: 'All alerts' })),
-        el('ul', { class: 'att-list' }, o.attention.map(a => el('li', { class: `att ${cls[a.severity]}` },
-          el('span', { class: 'att-ico', text: ico[a.severity] }),
-          el('div', null, el('strong', { text: a.title }), a.detail ? el('span', { class: 'muted', text: ` – ${a.detail}` }) : null),
-          el('time', { text: `since ${time(a.since)}` }),
-        )))));
-    } else {
-      out.push(el('div', { class: 'card attention ok' }, el('span', { class: 'att-ok', text: '✓' }),
-        el('div', null, el('strong', { text: 'Nothing needs attention' }), el('p', { class: 'muted small', text: 'No open alerts.' }))));
-    }
+      el('div', { class: 'muted small', text: `from Claude, ${ago(u.at)}` }),
+    ) : empty('No daily update from Claude yet.'));
     const s = o.stats;
     out.push(el('div', { class: 'kpis' },
       kpi('Open alerts', s.open_alerts, null, s.open_alerts ? (d.badges.alerts.cls === 'bad' ? 'bad' : 'warn') : 'ok', '#alerts'),
       kpi('Need to Read', s.need_to_read, null, '', '#email'),
-      kpi('Network down or warn', s.network_problems, d.network ? `snapshot ${ago(d.network.taken_at)}` : 'no snapshot', s.network_problems ? (d.network.counts.down ? 'bad' : 'warn') : 'ok', '#network'),
       kpi('News, last 24 h', s.news_24h, null, '', '#news'),
     ));
     return out;
   }
 
   function viewUpdates(d) {
-    const kinds = [['', 'All'], ['daily', 'Daily'], ['hourly', 'Hourly'], ['note', 'Note']];
-    const list = d.updates.filter(u => !state.updatesKind || u.kind === state.updatesKind);
     return [
-      pageHead('Updates', `${d.updates.length} newest updates from Claude, newest first.`),
-      el('div', { class: 'toolbar' }, el('div', { class: 'seg', role: 'group', 'aria-label': 'Filter by kind' }, kinds.map(([v, l]) =>
-        el('button', { type: 'button', class: state.updatesKind === v ? 'on' : '', 'aria-pressed': String(state.updatesKind === v), text: l, on: { click: () => { state.updatesKind = v; render(); } } })))),
-      list.length ? list.map(u => el('article', { class: 'card update' },
-        el('div', { class: 'update-head' }, dot(u.status), el('h3', { text: u.title }), pill('info', u.kind), el('span', { class: 'muted small', text: `${time(u.at)} · ${ago(u.at)}` })),
+      pageHead('Updates', 'Daily updates from Claude, newest first.'),
+      d.updates.length ? d.updates.map(u => el('article', { class: 'card update' },
+        el('div', { class: 'update-head' }, dot(u.status), el('h3', { text: u.title }), el('span', { class: 'muted small', text: `${time(u.at)} · ${ago(u.at)}` })),
         u.summary ? el('p', { class: 'pre-line', text: u.summary }) : null,
         u.items && u.items.length ? itemsTable(u.items) : null,
-      )) : empty(state.updatesKind ? `No ${state.updatesKind} updates.` : 'No updates yet.'),
-    ];
-  }
-
-  function viewNetwork(d) {
-    const n = d.network;
-    if (!n) return [pageHead('Network'), empty('No network snapshot yet.')];
-    return [
-      pageHead('Network', 'The latest snapshot, groups with problems first.'),
-      el('div', { class: 'kpis' },
-        kpi('OK', n.counts.ok, null, 'ok'),
-        kpi('Warn', n.counts.warn, null, n.counts.warn ? 'warn' : ''),
-        kpi('Down', n.counts.down, null, n.counts.down ? 'bad' : ''),
-        kpi('Snapshot taken', time(n.taken_at), ago(n.taken_at)),
-      ),
-      el('div', { class: 'cards2' }, n.groups.map(g => tableCard(g.group, `${g.items.length} item${g.items.length === 1 ? '' : 's'}`, ['Name', 'State', 'Detail'],
-        g.items.map(i => [i.name, el('span', null, dot(i.state, true), i.state), { wrap: true, v: i.detail }])))),
+      )) : empty('No daily updates yet.'),
     ];
   }
 
@@ -174,19 +155,6 @@
           );
         })),
       )),
-    ];
-  }
-
-  function viewSites(d) {
-    if (!d.site_notes.length) return [pageHead('Sites'), empty('Nothing reported about any site yet.')];
-    return [
-      pageHead('Sites', 'What Claude reports about each site, worst status first.'),
-      el('div', { class: 'cards2' }, d.site_notes.map(c => el('div', { class: 'card pad' },
-        el('div', { class: 'card-head' }, el('h3', null, dot(c.status, true), c.site), el('span', null, pill(c.status), ' ', el('span', { class: 'muted small', text: `updated ${ago(c.updated_at)}` }))),
-        el('ul', { class: 'notes' }, c.items.map(i => el('li', null, dot(i.status, true),
-          el('div', null, el('span', { text: i.title }), i.detail ? el('span', { class: 'muted small', text: ` – ${i.detail}` }) : null),
-          el('time', { text: time(i.at) })))),
-      ))),
     ];
   }
 
@@ -252,7 +220,7 @@
     document.title = `${critical ? `(${critical}) ` : ''}${d.title}`;
   }
 
-  const PAGES = { overview: viewOverview, updates: viewUpdates, network: viewNetwork, email: viewEmail, news: viewNews, sites: viewSites, alerts: viewAlerts, clients: viewClients };
+  const PAGES = { overview: viewOverview, updates: viewUpdates, email: viewEmail, news: viewNews, alerts: viewAlerts, clients: viewClients };
   function render() {
     const view = currentView();
     $$('.view').forEach(v => { v.hidden = v.dataset.view !== view; });

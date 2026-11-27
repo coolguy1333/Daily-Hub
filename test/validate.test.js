@@ -55,7 +55,7 @@ test('codes are masked only in code-like subjects', () => {
 test('JSON Schema matches the validation rules', () => {
   const s = V.toJsonSchema(S.publish);
   assert.equal(s.additionalProperties, false);
-  assert.deepEqual(Object.keys(s.properties), ['update', 'network', 'news', 'emails', 'alerts', 'sites']);
+  assert.deepEqual(Object.keys(s.properties), ['update', 'news', 'emails', 'alerts']);
   assert.equal(s.properties.update.properties.summary.maxLength, 4000);
   assert.equal(s.properties.emails.maxItems, 200);
   assert.deepEqual(Object.keys(s.properties.emails.items.properties), ['id', 'received_at', 'sender', 'subject', 'label', 'need_to_read']);

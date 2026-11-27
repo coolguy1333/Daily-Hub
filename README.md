@@ -5,16 +5,15 @@ other data source: the app makes no checks of its own.
 
 The page has the same layout as [homelab-status](https://github.com/coolguy1333/homelab-status): a top
 bar, a sidebar of pages with badges (a scrolling tab bar under 900 px), light and dark themes, and it
-refreshes every 60 s. WebManager and Homelab Status show up only through what Claude publishes.
+refreshes every 60 s. It keeps to what matters: no server details, only daily updates and the alerts
+Claude raises.
 
 | Page | Shows | Badge |
 |---|---|---|
-| **Overview** (`#overview`) | *What's happening*: the newest update with its items and how long ago Claude sent it; *Needs attention* (open alerts, most severe first); tiles for open alerts, Need to Read, network items down or warn, news in the last 24 h. A banner warns when Claude hasn't checked in for over 2 hours. | open critical alerts (red) |
-| **Updates** | All updates (newest 100), filter daily / hourly / note, items as a table. | – |
-| **Network** | Tiles for ok / warn / down and when the snapshot was taken; one card per group, problems first. | items down (red) |
+| **Overview** (`#overview`) | *Homelab* on top: **All OK** when no alert is open, otherwise the open alerts, newest first. Then *What's happening* (the newest daily update with its items and how long ago Claude sent it) and tiles for open alerts, Need to Read and news in the last 24 h. A banner warns when Claude hasn't checked in (any update) for over 2 hours. | open critical alerts (red) |
+| **Updates** | Daily updates only (newest 100), items as a table. Hourly updates and notes are accepted but not shown. | – |
 | **Email** | Tiles for the last 24 h and Need to Read; Need to Read on top (until Claude clears it), then the last 24 h by label. Time, sender, subject and label only, as plain text, never links. | Need to Read (blue) |
 | **News** | Newest first, grouped by topic. A headline is a link only if its URL starts with `https://`. | – |
-| **Sites** | One card per site Claude reports on (the `sites` part of `publish`): status and newest notes, worst first. | sites down (red) |
 | **Alerts** | Open alerts, then those resolved in the last 30 days. | open alerts (red if any is critical, amber otherwise) |
 | **Clients** | Connected MCP clients with **Revoke**, the signed-in email and **Sign out**. | – |
 
@@ -99,12 +98,12 @@ ISO 8601 with a time zone.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `get_state` *(read-only)* | – | `{latest: {update, network_at, news_at, email_received_at, site_note_at}, sites: [{site, status, updated_at}], open_alerts: [{key, severity, title, since}], need_to_read: [{id, sender, subject, received_at}], counts}` |
-| `publish` | any of `update`, `network`, `news`, `emails`, `alerts`, `sites` (below) | `{ok, added: {…}, updated: {…}, rejected: [{part, index, reason}]}` |
+| `get_state` *(read-only)* | – | `{latest: {update, news_at, email_received_at}, open_alerts: [{key, severity, title, since}], need_to_read: [{id, sender, subject, received_at}], counts}` |
+| `publish` | any of `update`, `news`, `emails`, `alerts` (below) | `{ok, added: {…}, updated: {…}, rejected: [{part, index, reason}]}` |
 | `raise_alert` | `{key, severity: info\|warn\|critical, title, detail?}` | `{ok, key, result: added\|updated}` |
 | `resolve_alert` | `{key}` | `{ok, key, result: resolved\|already_resolved\|not_found}` |
 | `set_need_to_read` | `{ids: [...], value?: false}` | `{ok, updated, unchanged, not_found}` |
-| `list_entries` *(read-only)* | `{section: updates\|network\|news\|emails\|alerts\|sites, since?, limit? (1-50, default 20)}` | `{section, total, items, more}` (short fields) |
+| `list_entries` *(read-only)* | `{section: updates\|news\|emails\|alerts, since?, limit? (1-50, default 20)}` | `{section, total, items, more}` (short fields) |
 | `delete_entry` *(destructive)* | `{section, id}` (alerts: the key) | `{ok, deleted}` |
 
 `publish` parts (all optional, applied in one transaction; bad items are rejected one by one, the rest
@@ -112,14 +111,11 @@ is applied; `ok` is `false` when anything was rejected):
 
 ```jsonc
 {
-  "update":  { "kind": "daily|hourly|note", "status": "ok|warn|down", "title": "…",
+  "update":  { "kind": "daily|hourly|note", "status": "ok|warn|down", "title": "…",   // only daily is shown
                "summary": "plain text, max 4000", "items": [{ "name": "…", "state": "…", "detail": "…" }] },
-  "network": { "taken_at": "2026-11-26T07:00:00Z",          // replaces the current snapshot
-               "items": [{ "group": "proxmox|unifi|cloudflare|services|other", "name": "…", "state": "ok|warn|down", "detail": "…" }] },
   "news":    [{ "topic": "…", "source": "…", "headline": "…", "summary": "…", "url": "https://…" }],  // deduplicated by url
   "emails":  [{ "id": "<gmail message id>", "received_at": "…", "sender": "…", "subject": "…", "label": "…", "need_to_read": true }],  // upserted by id
-  "alerts":  { "raise": [{ "key": "…", "severity": "info|warn|critical", "title": "…", "detail": "…" }], "resolve": ["key"] },
-  "sites":   [{ "site": "WebManager", "key": "…", "status": "ok|warn|down|info", "title": "…", "detail": "…" }]  // key optional: same site+key replaces
+  "alerts":  { "raise": [{ "key": "…", "severity": "info|warn|critical", "title": "…", "detail": "…" }], "resolve": ["key"] }
 }
 ```
 
@@ -128,13 +124,14 @@ is applied; `ok` is `false` when anything was rejected):
   4–8 digits become `•••`.
 - **Alerts** are idempotent by key: raising an open alert updates it (keeping its start time);
   resolving a closed or unknown one is a no-op. In one `publish`, `resolve` runs after `raise`.
-- **Site notes** make up the Sites section. `site` is any name (matched case-insensitively; use
-  the same one every time). A site's status is that of its newest note with `ok`, `warn` or `down`;
-  `info` (the default) adds a note without changing the status. The card shows the newest 8 notes.
-  With a `key`, a note replaces the earlier one with the same site and key (e.g. `cert`), so a daily
-  run doesn't pile up copies. `get_state.sites` lists each site's status and last update.
-- **Retention** (daily): entries and site notes older than 30 days, alerts resolved over 30 days ago, network
-  snapshots older than 7 days.
+- **Alerts are the server news.** There are no server details any more: raise an alert only for
+  something that needs attention, and resolve it when it's fixed. The Overview shows **All OK** when
+  none is open.
+- **Removed in 1.3.0:** the `network` and `sites` parts of `publish`, and those sections in
+  `list_entries` / `delete_entry`. A run that still sends them gets them back in `rejected`
+  (`unknown part`); the rest of its call is applied as usual. Stored network snapshots and site notes
+  are dropped from `hub.json` on the first start of 1.3.0.
+- **Retention** (daily): entries older than 30 days and alerts resolved over 30 days ago.
 - **Rate limit**: 60 MCP calls per minute per client (HTTP 429 after that).
 
 ## Security
@@ -161,6 +158,13 @@ All in `/data` (`DATA_DIR`): `hub.json` (everything published) and
 `oauth.json` (clients and token hashes). WebManager backs `/data` up before each restart.
 A `sites.json` left by versions before 1.1.0 (which checked sites themselves) is ignored; you can
 delete it.
+
+## Releases
+
+Raising `version` in `package.json` and merging to `main` is all it takes:
+`.github/workflows/release.yml` runs the tests, then tags the merge commit with that version and
+publishes a GitHub release with notes generated from the merged pull requests. If the version is
+already released, it does nothing.
 
 ## Development
 

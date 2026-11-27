@@ -29,8 +29,9 @@ test('tools/list: names, short descriptions, annotations, strict schemas', async
 
 test('get_state on an empty hub', async () => {
   const s = await call('get_state');
-  assert.deepEqual(s.latest, { update: null, network_at: null, news_at: null, email_received_at: null, site_note_at: null });
-  assert.deepEqual(s.sites, []);
+  assert.deepEqual(s.latest, { update: null, news_at: null, email_received_at: null });
+  assert.equal('sites' in s, false);
+  assert.deepEqual(Object.keys(s.counts).sort(), ['alerts_open', 'emails', 'need_to_read', 'news', 'updates']);
   assert.deepEqual(s.open_alerts, []);
   assert.deepEqual(s.need_to_read, []);
   assert.equal(s.counts.updates, 0);
@@ -39,17 +40,15 @@ test('get_state on an empty hub', async () => {
 test('publish: all parts in one call, compact response', async () => {
   const r = await call('publish', {
     update: { kind: 'daily', status: 'warn', title: 'Morning run', summary: 'All fine\nexcept backups.', items: [{ name: 'backup', state: 'warn', detail: 'late' }] },
-    network: { taken_at: ago(5), items: [{ group: 'proxmox', name: 'pve1', state: 'ok' }, { group: 'unifi', name: 'ap-1', state: 'down', detail: 'offline' }] },
     news: [{ topic: 'Tech', source: 'Example', headline: 'Big news', summary: 's', url: 'https://example.com/a' }],
     emails: [{ id: 'm1', received_at: ago(30), sender: 'Bank', subject: 'Statement', label: 'Finance', need_to_read: true }],
     alerts: { raise: [{ key: 'backup-late', severity: 'warn', title: 'Backup late' }] },
   });
-  assert.deepEqual(r, { ok: true, added: { updates: 1, network_items: 2, news: 1, emails: 1, alerts: 1 }, updated: {}, rejected: [], _isError: false });
+  assert.deepEqual(r, { ok: true, added: { updates: 1, news: 1, emails: 1, alerts: 1 }, updated: {}, rejected: [], _isError: false });
   assert.ok(!JSON.stringify(r).includes('Morning run'), 'content is not echoed');
 
   const s = await call('get_state');
   assert.equal(s.latest.update.title, 'Morning run');
-  assert.equal(s.latest.network_at, ago(5));
   assert.equal(s.latest.news_at, ago(0));
   assert.equal(s.latest.email_received_at, ago(30));
   assert.equal(s.open_alerts[0].key, 'backup-late');
@@ -64,33 +63,14 @@ test('publish: bad items are rejected one by one, the rest is applied', async ()
       { topic: 'Tech', headline: 'No url' },
       { topic: 'Tech', headline: 'x'.repeat(501), url: 'https://example.com/long' },
     ],
-    network: { taken_at: ago(1), items: [{ group: 'proxmox', name: 'pve2', state: 'ok' }, { group: 'nope', name: 'x', state: 'ok' }] },
     update: { kind: 'weekly', status: 'ok', title: 'bad kind' },
     bogus: {},
   });
   assert.equal(r.ok, false);
-  assert.deepEqual(r.added, { network_items: 1, news: 1 });
+  assert.deepEqual(r.added, { news: 1 });
   const parts = r.rejected.map(x => `${x.part}${x.index !== undefined ? `[${x.index}]` : ''}`).sort();
-  assert.deepEqual(parts, ['bogus', 'network.items[1]', 'news[1]', 'news[2]', 'update']);
+  assert.deepEqual(parts, ['bogus', 'news[1]', 'news[2]', 'update']);
   assert.match(r.rejected.find(x => x.part === 'bogus').reason, /unknown part/);
-});
-
-test('publish: a network part replaces the current snapshot', async () => {
-  await call('publish', { network: { taken_at: ago(0), items: [{ group: 'cloudflare', name: 'tunnel', state: 'ok' }] } });
-  const snap = ctx.app.hub.latestSnapshot();
-  assert.deepEqual(snap.items.map(i => i.name), ['tunnel']);
-  const view = ctx.app.hub.view().network;
-  assert.deepEqual(view.groups.map(g => g.group), ['cloudflare']);
-});
-
-test('publish: network board orders down, then warn, then ok', async () => {
-  await call('publish', { network: { taken_at: ago(0), items: [
-    { group: 'services', name: 'a', state: 'ok' }, { group: 'services', name: 'b', state: 'down' },
-    { group: 'proxmox', name: 'c', state: 'warn' }, { group: 'services', name: 'd', state: 'warn' },
-  ] } });
-  const v = ctx.app.hub.view().network;
-  assert.deepEqual(v.groups.map(g => g.group), ['services', 'proxmox']);
-  assert.deepEqual(v.groups[0].items.map(i => i.state), ['down', 'warn', 'ok']);
 });
 
 test('publish: news is deduplicated by url', async () => {
@@ -153,58 +133,32 @@ test('publish: more than 200 items per call are rejected individually', async ()
   assert.match(r.rejected[0].reason, /over 200 items/);
 });
 
-test('publish: site notes are validated, replaced by key, listed and deleted', async () => {
-  let r = await call('publish', { sites: [
-    { site: 'Homelab Status', key: 'cert', status: 'warn', title: 'Certificate expires in 10 days' },
-    { site: 'WebManager', status: 'ok', title: 'Nightly backup finished', detail: '2.1 GB' },
-    { site: 'x'.repeat(101), title: 'name too long' },
-    { site: 'WebManager', title: 'x', url: 'https://example.com' },
-    { site: 'WebManager', status: 'great', title: 'bad status' },
-  ] });
-  assert.deepEqual(r.added, { site_notes: 2 });
-  assert.deepEqual(r.rejected.map(x => x.index), [2, 3, 4]);
+test('removed in 1.3.0: network and sites parts are rejected, the rest of the call still applies', async () => {
+  const r = await call('publish', {
+    network: { taken_at: ago(1), items: [{ group: 'proxmox', name: 'pve1', state: 'ok' }] },
+    sites: [{ site: 'WebManager', status: 'ok', title: 'Backup finished' }],
+    news: [{ topic: 'Tech', headline: 'Still accepted', url: 'https://example.com/still' }],
+  });
+  assert.equal(r._isError, false, 'an old run calling with network/sites does not fail');
+  assert.deepEqual(r.added, { news: 1 });
+  assert.deepEqual(r.rejected, [{ part: 'network', reason: 'unknown part' }, { part: 'sites', reason: 'unknown part' }]);
+  assert.equal('snapshots' in ctx.app.store.hub, false);
+  assert.equal('site_notes' in ctx.app.store.hub, false);
 
-  ctx.clock.advance(60e3);
-  r = await call('publish', { sites: [{ site: 'homelab status', key: 'cert', status: 'warn', title: 'Certificate expires in 9 days' }] });
-  assert.deepEqual(r.updated, { site_notes: 1 }, 'site names match case-insensitively');
-  const notes = ctx.app.store.hub.site_notes.filter(n => n.key === 'cert');
-  assert.equal(notes.length, 1);
-  assert.equal(notes[0].title, 'Certificate expires in 9 days');
-  assert.equal(notes[0].at, ago(0), 'a replaced note counts as new');
-
-  const s = await call('get_state');
-  assert.equal(s.counts.site_notes, 2);
-  assert.equal(s.latest.site_note_at, ago(0));
-  assert.deepEqual(s.sites, [
-    { site: 'homelab status', status: 'warn', updated_at: ago(0) },
-    { site: 'WebManager', status: 'ok', updated_at: ago(1) },
-  ]);
-
-  const list = await call('list_entries', { section: 'sites' });
-  assert.deepEqual(list.items.map(n => n.site), ['homelab status', 'WebManager']);
+  const tools = Object.fromEntries((await h.rpc(ctx, tok, 'tools/list')).body.result.tools.map(t => [t.name, t]));
+  assert.deepEqual(Object.keys(tools.publish.inputSchema.properties), ['update', 'news', 'emails', 'alerts']);
+  for (const t of ['list_entries', 'delete_entry']) assert.deepEqual(tools[t].inputSchema.properties.section.enum, ['updates', 'news', 'emails', 'alerts']);
+  assert.doesNotMatch(JSON.stringify(Object.values(tools).map(t => t.description)), /network|sites?\b/i);
+  for (const section of ['network', 'sites']) {
+    assert.equal((await call('list_entries', { section }))._isError, true, `list_entries ${section}`);
+    assert.equal((await call('delete_entry', { section, id: 'x' }))._isError, true, `delete_entry ${section}`);
+  }
 });
 
-test('site cards: status from the newest note that sets one, worst first, newest notes first', async () => {
-  ctx.clock.advance(60e3);
-  await call('publish', { sites: [{ site: 'WebManager', status: 'down', title: 'Down: HTTP 502' }] });
-  ctx.clock.advance(60e3);
-  await call('publish', { sites: [{ site: 'WebManager', title: 'Investigating the proxy' }] }); // info: no status change
-  let cards = ctx.app.hub.siteCards();
-  assert.deepEqual(cards.map(c => [c.site, c.status]), [['WebManager', 'down'], ['homelab status', 'warn']]);
-  assert.deepEqual(cards[0].items.map(i => i.title), ['Investigating the proxy', 'Down: HTTP 502', 'Nightly backup finished']);
-
-  ctx.clock.advance(5 * 60e3);
-  await call('publish', { sites: [{ site: 'WebManager', status: 'ok', title: 'Back up after 6m' }] });
-  cards = ctx.app.hub.siteCards();
-  assert.deepEqual(cards.map(c => [c.site, c.status]), [['homelab status', 'warn'], ['WebManager', 'ok']]);
-
-  // The page gets exactly these cards, and nothing from site checks.
-  const d = await (await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) })).json();
-  assert.equal('sites' in d, false);
-  assert.deepEqual(d.site_notes.map(c => c.site), ['homelab status', 'WebManager']);
-  assert.ok(!('bars' in d.site_notes[0]) && !('uptime_7d' in d.site_notes[0]));
-  for (const n of [...ctx.app.store.hub.site_notes]) await call('delete_entry', { section: 'sites', id: n.id });
-  assert.deepEqual(ctx.app.hub.siteCards(), []);
+test('publish: every update kind is still accepted', async () => {
+  const r = await call('publish', { update: { kind: 'hourly', status: 'ok', title: 'Hourly check' } });
+  assert.deepEqual(r.added, { updates: 1 });
+  assert.equal((await call('publish', { update: { kind: 'note', status: 'ok', title: 'A note' } })).added.updates, 1);
 });
 
 test('raise_alert / resolve_alert are idempotent by key', async () => {
@@ -261,8 +215,6 @@ test('list_entries: newest first, limit <= 50, since filter', async () => {
   const m2At = ctx.app.store.hub.emails.find(e => e.id === 'm2').received_at;
   r = await call('list_entries', { section: 'emails', since: m2At });
   assert.deepEqual(r.items.map(e => e.id), ['m2']);
-  r = await call('list_entries', { section: 'network' });
-  assert.ok(r.items[0].items >= 1);
   r = await call('list_entries', { section: 'nope' });
   assert.equal(r._isError, true);
 });

@@ -5,7 +5,7 @@ const h = require('./helpers');
 
 const DAY = 24 * 3600e3;
 
-test('retention: 30 days for entries and resolved alerts, 7 days for snapshots', async () => {
+test('retention: 30 days for entries and resolved alerts', async () => {
   const ctx = await h.startApp();
   try {
     const hub = ctx.app.hub;
@@ -16,22 +16,17 @@ test('retention: 30 days for entries and resolved alerts, 7 days for snapshots',
       update: { kind: 'note', status: 'ok', title: 'old' },
       news: [{ topic: 'T', headline: 'old', url: 'https://example.com/old' }],
       emails: [{ id: 'old', received_at: iso(t0 - 1000), sender: 'a', subject: 'b' }],
-      network: { taken_at: iso(t0), items: [{ group: 'other', name: 'x', state: 'ok' }] },
       alerts: { raise: [{ key: 'resolved-old', severity: 'info', title: 't' }, { key: 'still-open', severity: 'warn', title: 't' }] },
-      sites: [{ site: 'Homelab Status', title: 'old note' }],
     });
     hub.resolveAlert({ key: 'resolved-old' });
 
     ctx.clock.advance(8 * DAY);
-    hub.publish({ network: { taken_at: iso(ctx.clock.now()), items: [{ group: 'other', name: 'y', state: 'ok' }] } });
-    assert.deepEqual(hub.retention(), { snapshots: 1 });
-    assert.equal(ctx.app.store.hub.snapshots.length, 1);
+    assert.deepEqual(hub.retention(), {}, 'nothing is 30 days old yet');
 
     ctx.clock.advance(23 * DAY);
     hub.publish({ update: { kind: 'note', status: 'ok', title: 'new' }, news: [{ topic: 'T', headline: 'new', url: 'https://example.com/new' }] });
     const removed = hub.retention();
-    assert.deepEqual(removed, { updates: 1, news: 1, emails: 1, site_notes: 1, alerts: 1, snapshots: 1 });
-    assert.deepEqual(d0().site_notes, []);
+    assert.deepEqual(removed, { updates: 1, news: 1, emails: 1, alerts: 1 });
     const d = d0();
     assert.deepEqual(d.updates.map(u => u.title), ['new']);
     assert.deepEqual(d.news.map(n => n.headline), ['new']);
@@ -53,4 +48,33 @@ test('retention: expired OAuth tokens and abandoned clients are pruned', async (
     assert.equal(Object.keys(db.access).length, 0, 'expired access token removed');
     assert.equal(Object.keys(db.refresh).length, 1);
   } finally { await ctx.close(); }
+});
+
+test('startup drops network snapshots and site notes from hub.json (removed in 1.3.0)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { Store } = require('../lib/store');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-hub-130-'));
+  const file = path.join(dir, 'hub.json');
+  const update = { id: 'u_1', at: '2026-11-27T10:00:00.000Z', kind: 'daily', status: 'ok', title: 'kept', summary: '', items: [] };
+  fs.writeFileSync(file, JSON.stringify({
+    updates: [update], news: [], emails: [], alerts: [],
+    snapshots: [{ id: 'n_1', taken_at: '2026-11-27T10:00:00.000Z', items: [{ group: 'other', name: 'x', state: 'ok' }] }],
+    site_notes: [{ id: 's_1', site: 'WebManager', title: 'note' }],
+  }));
+  const logs = [];
+  const orig = console.log;
+  console.log = m => logs.push(m);
+  try { new Store(dir); } finally { console.log = orig; }
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(Object.keys(after).sort(), ['alerts', 'emails', 'news', 'updates']);
+  assert.deepEqual(after.updates, [update], 'everything else is kept');
+  assert.match(logs.join('\n'), /Dropped 1 snapshots, 1 site_notes/);
+
+  // A second start has nothing to drop and leaves the file alone.
+  const mtime = fs.statSync(file).mtimeMs;
+  new Store(dir);
+  assert.equal(fs.statSync(file).mtimeMs, mtime);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
