@@ -90,7 +90,8 @@ test('security headers: strict CSP, no framing', async () => {
   }
   const html = await (await get('/', ctx.jwt())).text();
   assert.ok(!/<script>|\sstyle=|\son\w+=/i.test(html), 'no inline script, style or handlers');
-  assert.ok(html.includes('/cdn-cgi/access/logout'));
+  const js = await (await get('/app.js', ctx.jwt())).text();
+  assert.ok(js.includes("href: '/cdn-cgi/access/logout'"), 'Sign out is on the Clients page');
 });
 
 test('stored text reaches the page only as JSON data, rendered with textContent', async () => {

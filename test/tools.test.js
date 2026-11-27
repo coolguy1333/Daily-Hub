@@ -200,8 +200,9 @@ test('site cards: status from the newest note that sets one, worst first, newest
 
   // The page gets exactly these cards, and nothing from site checks.
   const d = await (await fetch(`${ctx.base}/api/dashboard`, { headers: h.accessHeaders(ctx) })).json();
-  assert.deepEqual(d.sites.map(c => c.site), ['homelab status', 'WebManager']);
-  assert.ok(!('bars' in d.sites[0]) && !('uptime_7d' in d.sites[0]));
+  assert.equal('sites' in d, false);
+  assert.deepEqual(d.site_notes.map(c => c.site), ['homelab status', 'WebManager']);
+  assert.ok(!('bars' in d.site_notes[0]) && !('uptime_7d' in d.site_notes[0]));
   for (const n of [...ctx.app.store.hub.site_notes]) await call('delete_entry', { section: 'sites', id: n.id });
   assert.deepEqual(ctx.app.hub.siteCards(), []);
 });
