@@ -9,6 +9,7 @@ test('retention: 30 days for entries and resolved alerts, 7 days for snapshots',
   const ctx = await h.startApp();
   try {
     const hub = ctx.app.hub;
+    const d0 = () => ctx.app.store.hub;
     const iso = ms => new Date(ms).toISOString();
     const t0 = ctx.clock.now();
     hub.publish({
@@ -17,6 +18,7 @@ test('retention: 30 days for entries and resolved alerts, 7 days for snapshots',
       emails: [{ id: 'old', received_at: iso(t0 - 1000), sender: 'a', subject: 'b' }],
       network: { taken_at: iso(t0), items: [{ group: 'other', name: 'x', state: 'ok' }] },
       alerts: { raise: [{ key: 'resolved-old', severity: 'info', title: 't' }, { key: 'still-open', severity: 'warn', title: 't' }] },
+      sites: [{ site: 'homelab', title: 'old note' }],
     });
     hub.resolveAlert({ key: 'resolved-old' });
 
@@ -28,8 +30,9 @@ test('retention: 30 days for entries and resolved alerts, 7 days for snapshots',
     ctx.clock.advance(23 * DAY);
     hub.publish({ update: { kind: 'note', status: 'ok', title: 'new' }, news: [{ topic: 'T', headline: 'new', url: 'https://example.com/new' }] });
     const removed = hub.retention();
-    assert.deepEqual(removed, { updates: 1, news: 1, emails: 1, alerts: 1, snapshots: 1 });
-    const d = ctx.app.store.hub;
+    assert.deepEqual(removed, { updates: 1, news: 1, emails: 1, site_notes: 1, alerts: 1, snapshots: 1 });
+    assert.deepEqual(d0().site_notes, []);
+    const d = d0();
     assert.deepEqual(d.updates.map(u => u.title), ['new']);
     assert.deepEqual(d.news.map(n => n.headline), ['new']);
     assert.deepEqual(d.emails, []);

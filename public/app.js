@@ -82,8 +82,22 @@
         el('div', { class: 'muted small', text: meta }),
         bars,
         el('div', { class: 'bar-legend muted small' }, el('span', { text: '24h ago' }), el('span', { text: 'now' })),
+        siteUpdates(s.updates || []),
       );
     }));
+  }
+
+  // Important things about a site: down / back up / new version / restart, and Claude's notes.
+  function siteUpdates(list) {
+    if (!list.length) return el('p', { class: 'muted small site-quiet', text: 'Nothing new in the last 7 days.' });
+    return el('ul', { class: 'site-updates' }, list.map(u => el('li', null,
+      el('span', { class: `dot ${['ok', 'warn', 'down'].includes(u.status) ? u.status : 'info'}`, 'aria-label': u.status }),
+      el('div', { class: 'su-body' },
+        el('span', { class: 'su-title', text: u.title }),
+        u.detail ? el('span', { class: 'muted small', text: ` – ${u.detail}` }) : null,
+      ),
+      el('span', { class: 'muted small su-when', text: `${time(u.at)}${u.source === 'claude' ? ' · Claude' : ''}` }),
+    )));
   }
 
   function renderToday(updates) {

@@ -8,7 +8,9 @@ The page (one page, mobile-friendly, light/dark, refreshes every 60 s):
 0. **Alerts** – open alerts, most severe first.
 1. **Sites** – WebManager (`https://webmgr.dev/healthz`) and Homelab Status
    (`https://upt.webmgr.dev/api/health`, with its version and uptime), checked every 60 s, 7 days kept:
-   up/down, response time, last checked, 24-hour bar.
+   up/down, response time, last checked, 24-hour bar, and a feed of important things per site:
+   down (after 2 failed checks in a row), back up and after how long, new version, restart, plus
+   notes Claude publishes (a failed backup, an expiring certificate, …). 7 days of events are kept.
 2. **Today** – the newest updates, newest first.
 3. **Network** – the latest snapshot grouped by group, down → warn → ok, with when it was taken.
 4. **Email** – last 24 hours: *Need to Read* on top, the rest grouped by label. Time, sender, subject
@@ -100,12 +102,12 @@ ISO 8601 with a time zone.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `get_state` *(read-only)* | – | `{latest: {update, network_at, news_at, email_received_at}, open_alerts: [{key, severity, title, since}], need_to_read: [{id, sender, subject, received_at}], counts}` |
-| `publish` | any of `update`, `network`, `news`, `emails`, `alerts` (below) | `{ok, added: {…}, updated: {…}, rejected: [{part, index, reason}]}` |
+| `get_state` *(read-only)* | – | `{latest: {update, network_at, news_at, email_received_at, site_note_at}, sites: [{id, state, since}], open_alerts: [{key, severity, title, since}], need_to_read: [{id, sender, subject, received_at}], counts}` |
+| `publish` | any of `update`, `network`, `news`, `emails`, `alerts`, `sites` (below) | `{ok, added: {…}, updated: {…}, rejected: [{part, index, reason}]}` |
 | `raise_alert` | `{key, severity: info\|warn\|critical, title, detail?}` | `{ok, key, result: added\|updated}` |
 | `resolve_alert` | `{key}` | `{ok, key, result: resolved\|already_resolved\|not_found}` |
 | `set_need_to_read` | `{ids: [...], value?: false}` | `{ok, updated, unchanged, not_found}` |
-| `list_entries` *(read-only)* | `{section: updates\|network\|news\|emails\|alerts, since?, limit? (1-50, default 20)}` | `{section, total, items, more}` (short fields) |
+| `list_entries` *(read-only)* | `{section: updates\|network\|news\|emails\|alerts\|sites, since?, limit? (1-50, default 20)}` | `{section, total, items, more}` (short fields) |
 | `delete_entry` *(destructive)* | `{section, id}` (alerts: the key) | `{ok, deleted}` |
 
 `publish` parts (all optional, applied in one transaction; bad items are rejected one by one, the rest
@@ -119,7 +121,8 @@ is applied; `ok` is `false` when anything was rejected):
                "items": [{ "group": "proxmox|unifi|cloudflare|services|other", "name": "…", "state": "ok|warn|down", "detail": "…" }] },
   "news":    [{ "topic": "…", "source": "…", "headline": "…", "summary": "…", "url": "https://…" }],  // deduplicated by url
   "emails":  [{ "id": "<gmail message id>", "received_at": "…", "sender": "…", "subject": "…", "label": "…", "need_to_read": true }],  // upserted by id
-  "alerts":  { "raise": [{ "key": "…", "severity": "info|warn|critical", "title": "…", "detail": "…" }], "resolve": ["key"] }
+  "alerts":  { "raise": [{ "key": "…", "severity": "info|warn|critical", "title": "…", "detail": "…" }], "resolve": ["key"] },
+  "sites":   [{ "site": "webmanager|homelab", "key": "…", "status": "ok|warn|down", "title": "…", "detail": "…" }]  // key optional: same site+key replaces
 }
 ```
 
@@ -128,7 +131,11 @@ is applied; `ok` is `false` when anything was rejected):
   4–8 digits become `•••`.
 - **Alerts** are idempotent by key: raising an open alert updates it (keeping its start time);
   resolving a closed or unknown one is a no-op. In one `publish`, `resolve` runs after `raise`.
-- **Retention** (daily): entries older than 30 days, alerts resolved over 30 days ago, network
+- **Site notes** appear in that site's feed on the page, next to the app's own events (newest 8).
+  With a `key`, a note replaces the earlier one with the same site and key (e.g. `cert`), so a daily
+  run doesn't pile up copies. `get_state.sites` gives each site's current state (`up`, `down`,
+  `pending`) and since when.
+- **Retention** (daily): entries and site notes older than 30 days, alerts resolved over 30 days ago, network
   snapshots older than 7 days. Site checks keep 7 days.
 - **Rate limit**: 60 MCP calls per minute per client (HTTP 429 after that).
 

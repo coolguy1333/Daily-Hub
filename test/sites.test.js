@@ -60,3 +60,75 @@ test('sites: 7 days of results are kept, and saved to sites.json', async () => {
   assert.equal(new Store(s.store.dir).sites.webmanager.results.length, 1);
   s.cleanup();
 });
+
+function flaky() {
+  const state = { web: { body: '{"status":"ok"}' }, upt: { body: '{"status":"ok","uptime":1000,"version":"2.14.0"}' } };
+  const s = setup({});
+  s.sites.fetch = async url => {
+    const r = url.includes('upt.') ? state.upt : state.web;
+    if (r instanceof Error) throw r;
+    return new Response(r.body, { status: r.status || 200 });
+  };
+  return { ...s, state, titles: id => s.store.sites[id].events.map(e => e.title) };
+}
+
+test('site events: one failed check is ignored; two in a row mark it down; recovery says for how long', async () => {
+  const s = flaky();
+  await s.sites.checkAll();
+  s.state.web = { body: 'Bad gateway', status: 502 };
+  s.advance(60e3); await s.sites.checkAll();
+  assert.deepEqual(s.titles('webmanager'), [], 'a single blip makes no event');
+  s.state.web = { body: '{"status":"ok"}' };
+  s.advance(60e3); await s.sites.checkAll();
+  assert.deepEqual(s.titles('webmanager'), []);
+
+  s.state.web = { body: 'Bad gateway', status: 502 };
+  s.advance(60e3); await s.sites.checkAll();
+  s.advance(60e3); await s.sites.checkAll();
+  s.advance(60e3); await s.sites.checkAll();
+  assert.deepEqual(s.titles('webmanager'), ['Down: HTTP 502'], 'one down event, not one per check');
+  assert.equal(s.sites.summary()[0].state, 'down');
+
+  s.state.web = { body: '{"status":"ok"}' };
+  s.advance(5 * 60e3); await s.sites.checkAll();
+  assert.deepEqual(s.titles('webmanager'), ['Down: HTTP 502', 'Back up after 7m']);
+  assert.equal(s.sites.summary()[0].state, 'up');
+  s.cleanup();
+});
+
+test('site events: new version and restart of Homelab Status', async () => {
+  const s = flaky();
+  await s.sites.checkAll();
+  s.advance(60e3);
+  s.state.upt = { body: '{"status":"ok","uptime":1060,"version":"2.14.0"}' };
+  await s.sites.checkAll();
+  assert.deepEqual(s.titles('homelab'), [], 'uptime grew normally');
+
+  s.advance(60e3);
+  s.state.upt = { body: '{"status":"ok","uptime":30,"version":"2.15.0"}' };
+  await s.sites.checkAll();
+  assert.deepEqual(s.titles('homelab'), ['Updated to v2.15.0'], 'a version change is reported once, not also as a restart');
+  assert.equal(s.store.sites.homelab.events[0].detail, 'was v2.14.0');
+
+  s.advance(60e3);
+  s.state.upt = { body: '{"status":"ok","uptime":15,"version":"2.15.0"}' };
+  await s.sites.checkAll();
+  assert.deepEqual(s.titles('homelab'), ['Updated to v2.15.0', 'Restarted']);
+
+  const v = s.sites.view().find(x => x.id === 'homelab');
+  assert.deepEqual(v.events.map(e => e.title), ['Restarted', 'Updated to v2.15.0'], 'newest first');
+  s.cleanup();
+});
+
+test('site events: kept 7 days', async () => {
+  const s = flaky();
+  await s.sites.checkAll();
+  s.state.web = new TypeError('fetch failed');
+  s.advance(60e3); await s.sites.checkAll();
+  s.advance(60e3); await s.sites.checkAll();
+  assert.deepEqual(s.titles('webmanager'), ['Down: unreachable']);
+  s.state.web = { body: '{"status":"ok"}' };
+  s.advance(8 * 24 * 3600e3); await s.sites.checkAll();
+  assert.deepEqual(s.titles('webmanager'), ['Back up after 8d 0h'], 'the 8-day-old down event is gone');
+  s.cleanup();
+});
