@@ -1,14 +1,13 @@
 # Daily hub
 
 A small private dashboard. Claude fills it through the app's own **remote MCP server**; there is no
-other data source. The app checks two sites itself.
+other data source: the app makes no checks of its own.
 
 The page (one page, mobile-friendly, light/dark, refreshes every 60 s):
 
 0. **Alerts** – open alerts, most severe first.
-1. **Sites** – WebManager (`https://webmgr.dev/healthz`) and Homelab Status
-   (`https://upt.webmgr.dev/api/health`, with its version and uptime), checked every 60 s, 7 days kept:
-   up/down, response time, last checked, 24-hour bar.
+1. **Sites** – one card per site Claude reports on: its status and the newest things that happened
+   (outages, recoveries, updates, backups, certificates, …), worst status first.
 2. **Today** – the newest updates, newest first.
 3. **Network** – the latest snapshot grouped by group, down → warn → ok, with when it was taken.
 4. **Email** – last 24 hours: *Need to Read* on top, the rest grouped by label. Time, sender, subject
@@ -52,9 +51,6 @@ Either of these blocks Claude's connector, so for the zone of `hub.example.com`:
   `160.79.104.0/24` through `160.79.111.0/24` (`160.79.104.0/24`, `160.79.105.0/24`, …,
   `160.79.111.0/24`). Optionally also add `153.61.208.0/24` through `153.61.223.0/24`
   (sixteen more rules).
-
-The app's own checks of `webmgr.dev` and `upt.webmgr.dev` come from your server's IP; if they show
-down with HTTP 403 while the sites are up, bot protection on that zone is challenging them too.
 
 ### 3. Deploy on WebManager
 
@@ -100,12 +96,12 @@ ISO 8601 with a time zone.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `get_state` *(read-only)* | – | `{latest: {update, network_at, news_at, email_received_at}, open_alerts: [{key, severity, title, since}], need_to_read: [{id, sender, subject, received_at}], counts}` |
-| `publish` | any of `update`, `network`, `news`, `emails`, `alerts` (below) | `{ok, added: {…}, updated: {…}, rejected: [{part, index, reason}]}` |
+| `get_state` *(read-only)* | – | `{latest: {update, network_at, news_at, email_received_at, site_note_at}, sites: [{site, status, updated_at}], open_alerts: [{key, severity, title, since}], need_to_read: [{id, sender, subject, received_at}], counts}` |
+| `publish` | any of `update`, `network`, `news`, `emails`, `alerts`, `sites` (below) | `{ok, added: {…}, updated: {…}, rejected: [{part, index, reason}]}` |
 | `raise_alert` | `{key, severity: info\|warn\|critical, title, detail?}` | `{ok, key, result: added\|updated}` |
 | `resolve_alert` | `{key}` | `{ok, key, result: resolved\|already_resolved\|not_found}` |
 | `set_need_to_read` | `{ids: [...], value?: false}` | `{ok, updated, unchanged, not_found}` |
-| `list_entries` *(read-only)* | `{section: updates\|network\|news\|emails\|alerts, since?, limit? (1-50, default 20)}` | `{section, total, items, more}` (short fields) |
+| `list_entries` *(read-only)* | `{section: updates\|network\|news\|emails\|alerts\|sites, since?, limit? (1-50, default 20)}` | `{section, total, items, more}` (short fields) |
 | `delete_entry` *(destructive)* | `{section, id}` (alerts: the key) | `{ok, deleted}` |
 
 `publish` parts (all optional, applied in one transaction; bad items are rejected one by one, the rest
@@ -119,7 +115,8 @@ is applied; `ok` is `false` when anything was rejected):
                "items": [{ "group": "proxmox|unifi|cloudflare|services|other", "name": "…", "state": "ok|warn|down", "detail": "…" }] },
   "news":    [{ "topic": "…", "source": "…", "headline": "…", "summary": "…", "url": "https://…" }],  // deduplicated by url
   "emails":  [{ "id": "<gmail message id>", "received_at": "…", "sender": "…", "subject": "…", "label": "…", "need_to_read": true }],  // upserted by id
-  "alerts":  { "raise": [{ "key": "…", "severity": "info|warn|critical", "title": "…", "detail": "…" }], "resolve": ["key"] }
+  "alerts":  { "raise": [{ "key": "…", "severity": "info|warn|critical", "title": "…", "detail": "…" }], "resolve": ["key"] },
+  "sites":   [{ "site": "WebManager", "key": "…", "status": "ok|warn|down|info", "title": "…", "detail": "…" }]  // key optional: same site+key replaces
 }
 ```
 
@@ -128,8 +125,13 @@ is applied; `ok` is `false` when anything was rejected):
   4–8 digits become `•••`.
 - **Alerts** are idempotent by key: raising an open alert updates it (keeping its start time);
   resolving a closed or unknown one is a no-op. In one `publish`, `resolve` runs after `raise`.
-- **Retention** (daily): entries older than 30 days, alerts resolved over 30 days ago, network
-  snapshots older than 7 days. Site checks keep 7 days.
+- **Site notes** make up the Sites section. `site` is any name (matched case-insensitively; use
+  the same one every time). A site's status is that of its newest note with `ok`, `warn` or `down`;
+  `info` (the default) adds a note without changing the status. The card shows the newest 8 notes.
+  With a `key`, a note replaces the earlier one with the same site and key (e.g. `cert`), so a daily
+  run doesn't pile up copies. `get_state.sites` lists each site's status and last update.
+- **Retention** (daily): entries and site notes older than 30 days, alerts resolved over 30 days ago, network
+  snapshots older than 7 days.
 - **Rate limit**: 60 MCP calls per minute per client (HTTP 429 after that).
 
 ## Security
@@ -152,7 +154,7 @@ is applied; `ok` is `false` when anything was rejected):
 
 ## Data
 
-All in `/data` (`DATA_DIR`): `hub.json` (everything published), `sites.json` (site checks) and
+All in `/data` (`DATA_DIR`): `hub.json` (everything published) and
 `oauth.json` (clients and token hashes). WebManager backs `/data` up before each restart.
 
 ## Development
